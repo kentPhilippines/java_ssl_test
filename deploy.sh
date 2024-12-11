@@ -4,11 +4,15 @@
 APP_NAME="ssl-test-project"
 APP_USER="$(whoami)"
 APP_GROUP="$(id -gn)"
-INSTALL_DIR="/opt/${APP_NAME}"
-LOG_DIR="/var/log/${APP_NAME}"
+INSTALL_DIR="/opt/ssl-java"
+LOG_DIR="${INSTALL_DIR}/logs"
 BACKUP_DIR="${INSTALL_DIR}/backup"
 DATA_DIR="${INSTALL_DIR}/data"
+JDK_DIR="${INSTALL_DIR}/jdk"
+MAVEN_DIR="${INSTALL_DIR}/maven"
 JDK_VERSION="11"
+MAVEN_VERSION="3.9.6"
+ROLLBACK_SCRIPT="${INSTALL_DIR}/rollback.sh"
 
 # Git相关配置
 GIT_REPO="https://github.com/kentPhilippines/java_ssl_test.git"
@@ -16,7 +20,7 @@ GIT_BRANCH="main"
 VERSION_FILE="${INSTALL_DIR}/VERSION"
 
 # Maven配置
-MAVEN_OPTS="-Xmx512m"
+MAVEN_OPTS="-Xmx512m -Dmaven.repo.local=${INSTALL_DIR}/maven/repository"
 
 # 应用配置
 APP_OPTS="-Xmx1G -Xms512m"
@@ -53,7 +57,7 @@ check_system_requirements() {
     # 检查磁盘空间
     local free_space=$(df -m ${INSTALL_DIR} | awk 'NR==2 {print $4}')
     if [ $free_space -lt 1024 ]; then
-        log_error "磁盘空间不足，需要至少1GB可用空间"
+        log_error "磁盘空间不足，需至少1GB可用空间"
         return 1
     fi
 }
@@ -62,20 +66,56 @@ check_system_requirements() {
 install_dependencies() {
     log_info "安装依赖..."
     
-    if [ -f /etc/debian_version ]; then
-        sudo apt-get update
-        sudo apt-get install -y openjdk-${JDK_VERSION}-jdk maven git curl
-    elif [ -f /etc/redhat-release ]; then
-        sudo yum update
-        sudo yum install -y java-${JDK_VERSION}-openjdk-devel maven git curl
-    else
-        log_error "不支持的操作系统"
-        exit 1
+    # 检查curl
+    if ! command -v curl &> /dev/null; then
+        log_error "curl未安装，正在安装..."
+        if [ -f /etc/debian_version ]; then
+            sudo apt-get install -y curl
+        elif [ -f /etc/redhat-release ]; then
+            sudo yum install -y curl
+        fi
+    }
+    
+    # 创建安装目录
+    mkdir -p ${JDK_DIR} ${MAVEN_DIR}
+    
+    # 下载并安装JDK
+    log_info "下载JDK..."
+    # 检查下载URL是否可访问
+    if ! curl --output /dev/null --silent --head --fail "https://download.java.net/java/GA/jdk${JDK_VERSION}/9/GPL/openjdk-${JDK_VERSION}_linux-x64_bin.tar.gz"; then
+        log_error "JDK下载地址无效"
+        return 1
     fi
     
+    curl -L "https://download.java.net/java/GA/jdk${JDK_VERSION}/9/GPL/openjdk-${JDK_VERSION}_linux-x64_bin.tar.gz" -o /tmp/jdk.tar.gz
+    tar -xzf /tmp/jdk.tar.gz -C ${JDK_DIR} --strip-components=1
+    rm /tmp/jdk.tar.gz
+    
+    # 验证JDK安装
+    if ! ${JDK_DIR}/bin/java -version; then
+        log_error "JDK安装失败"
+        return 1
+    }
+    
+    # 下载并安装Maven
+    log_info "下载Maven..."
+    curl -L "https://dlcdn.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" -o /tmp/maven.tar.gz
+    tar -xzf /tmp/maven.tar.gz -C ${MAVEN_DIR} --strip-components=1
+    rm /tmp/maven.tar.gz
+    
+    # 配置环境变量
+    cat > ${INSTALL_DIR}/env << EOF
+export JAVA_HOME=${JDK_DIR}
+export MAVEN_HOME=${MAVEN_DIR}
+export PATH=\${JAVA_HOME}/bin:\${MAVEN_HOME}/bin:\$PATH
+EOF
+    
+    # 使环境变量生效
+    source ${INSTALL_DIR}/env
+    
     # 验证安装
-    java -version
-    mvn -version
+    ${JDK_DIR}/bin/java -version
+    ${MAVEN_DIR}/bin/mvn -version
     git --version
 }
 
@@ -84,12 +124,14 @@ setup_environment() {
     log_info "配置环境..."
     
     # 创建目录
-    sudo mkdir -p ${INSTALL_DIR}/{bin,conf,logs,data,backup,source}
+    sudo mkdir -p ${INSTALL_DIR}/{bin,conf,logs,data,backup,source,jdk,maven}
     sudo chown -R ${APP_USER}:${APP_GROUP} ${INSTALL_DIR}
     
     # 配置环境变量
     cat > ${INSTALL_DIR}/conf/env.conf << EOF
-JAVA_HOME=$(readlink -f /usr/bin/java | sed "s:/bin/java::")
+JAVA_HOME=${JDK_DIR}
+MAVEN_HOME=${MAVEN_DIR}
+PATH=${JDK_DIR}/bin:${MAVEN_DIR}/bin:$PATH
 MAVEN_OPTS="${MAVEN_OPTS}"
 APP_OPTS="${APP_OPTS}"
 EOF
@@ -126,7 +168,24 @@ acme:
 logging:
   level:
     com.ssltest: DEBUG
+  file:
+    path: ${INSTALL_DIR}/logs
+    name: application.log
+    max-size: 10MB
+    max-history: 7
 EOF
+    
+    # 配置日志目录
+    sudo mkdir -p ${INSTALL_DIR}/logs
+    sudo chown -R ${APP_USER}:${APP_GROUP} ${INSTALL_DIR}/logs
+    sudo chmod 755 ${INSTALL_DIR}/logs
+    
+    # 创建日志文件
+    touch ${INSTALL_DIR}/logs/application.log
+    touch ${INSTALL_DIR}/logs/stdout.log
+    touch ${INSTALL_DIR}/logs/stderr.log
+    sudo chown ${APP_USER}:${APP_GROUP} ${INSTALL_DIR}/logs/*.log
+    sudo chmod 644 ${INSTALL_DIR}/logs/*.log
 }
 
 # 创建系统服务
@@ -135,7 +194,7 @@ create_service() {
     
     cat > /tmp/${APP_NAME}.service << EOF
 [Unit]
-Description=${APP_NAME} Service
+Description=SSL Java Service
 After=network.target
 
 [Service]
@@ -149,8 +208,8 @@ ExecStart=/usr/bin/java \$APP_OPTS \\
 WorkingDirectory=${INSTALL_DIR}
 Restart=always
 RestartSec=10
-StandardOutput=append:${LOG_DIR}/stdout.log
-StandardError=append:${LOG_DIR}/stderr.log
+StandardOutput=append:${INSTALL_DIR}/logs/stdout.log
+StandardError=append:${INSTALL_DIR}/logs/stderr.log
 
 [Install]
 WantedBy=multi-user.target
@@ -165,10 +224,35 @@ build_application() {
     log_info "构建应用..."
     
     cd "${INSTALL_DIR}/source"
+    # 检查pom.xml
+    if [ ! -f "pom.xml" ]; then
+        log_error "pom.xml不存在"
+        return 1
+    fi
+    
     export MAVEN_OPTS="${MAVEN_OPTS}"
     
-    if ! mvn clean package -DskipTests; then
+    # 验证Maven配置
+    ${MAVEN_DIR}/bin/mvn -v || {
+        log_error "Maven配置错误"
+        return 1
+    }
+    
+    # 先执行clean和verify
+    if ! ${MAVEN_DIR}/bin/mvn clean verify -DskipTests; then
+        log_error "Maven验证失败"
+        return 1
+    fi
+    
+    # 构建
+    if ! ${MAVEN_DIR}/bin/mvn package -DskipTests; then
         log_error "构建失败"
+        return 1
+    fi
+    
+    # 检查构建结果
+    if [ ! -f "target/${APP_NAME}.jar" ]; then
+        log_error "构建产物不存在"
         return 1
     fi
     
@@ -194,8 +278,14 @@ configure_firewall() {
 configure_logrotate() {
     log_info "配置日志轮转..."
     
+    # 检查日志目录权限
+    if [ ! -w "${LOG_DIR}" ]; then
+        log_error "没有日志目录写入权限: ${LOG_DIR}"
+        return 1
+    fi
+    
     cat > /tmp/${APP_NAME}-logrotate << EOF
-${LOG_DIR}/*.log {
+${INSTALL_DIR}/logs/*.log {
     daily
     rotate 7
     compress
@@ -221,7 +311,7 @@ install_application() {
     setup_environment
     
     # 克隆代码
-    git clone -b ${GIT_BRANCH} ${GIT_REPO} "${INSTALL_DIR}/source"
+    git_clone
     
     build_application
     create_service
@@ -242,9 +332,39 @@ check_command() {
 # 启动应用
 start_application() {
     log_info "启动应用..."
+    
+    # 检查jar包是否存在
+    if [ ! -f "${INSTALL_DIR}/${APP_NAME}.jar" ]; then
+        log_error "应用jar包不存在"
+        return 1
+    fi
+    
+    # 检查配置文件
+    if [ ! -f "${INSTALL_DIR}/conf/application.yml" ]; then
+        log_error "配置文件不存在"
+        return 1
+    fi
+    
     sudo systemctl start ${APP_NAME}
-    sleep 5
-    check_application_status
+    
+    # 等待服务启动
+    local timeout=30
+    while [ $timeout -gt 0 ]; do
+        if check_application_status > /dev/null 2>&1; then
+            # 检查日志是否有错误
+            if grep -i "error" "${INSTALL_DIR}/logs/application.log" > /dev/null; then
+                log_error "应用启动出现错误，请检查日志"
+                return 1
+            }
+            log_info "应用启动成功"
+            return 0
+        fi
+        sleep 1
+        timeout=$((timeout-1))
+    done
+    
+    log_error "应用启动超时"
+    return 1
 }
 
 # 停止应用
@@ -401,12 +521,12 @@ update_application() {
     # 备份当前配置
     if [ -f "${INSTALL_DIR}/conf/application.yml" ]; then
         cp "${INSTALL_DIR}/conf/application.yml" "${BACKUP_DIR}/application.yml.$(date +%Y%m%d_%H%M%S)"
-    }
+    fi
     
     # 备份当前版本
     if [ -f "${INSTALL_DIR}/${APP_NAME}.jar" ]; then
         backup_current_version "${BACKUP_DIR}/${APP_NAME}-$(date +%Y%m%d_%H%M%S).jar"
-    }
+    fi
     
     # 更新代码
     cd "${INSTALL_DIR}/source"
@@ -419,7 +539,7 @@ update_application() {
     if [ "${current_version}" = "${remote_version}" ]; then
         log_info "当前已是最新版本"
         return 0
-    }
+    fi
     
     # 显示更新内容
     echo -e "${YELLOW}更新内容:${NC}"
@@ -432,7 +552,7 @@ update_application() {
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         log_info "更新已取消"
         return 1
-    }
+    fi
     
     # 更新代码
     git pull origin ${GIT_BRANCH}
@@ -469,6 +589,28 @@ update_application() {
         start_application
         return 1
     fi
+}
+
+# 克隆代码前添加检查
+git_clone() {
+    log_info "克隆代码..."
+    # 检查git是否安装
+    if ! command -v git &> /dev/null; then
+        log_error "Git未安装，正在安装..."
+        if [ -f /etc/debian_version ]; then
+            sudo apt-get install -y git
+        elif [ -f /etc/redhat-release ]; then
+            sudo yum install -y git
+        fi
+    }
+    
+    # 检查目标目录
+    if [ -d "${INSTALL_DIR}/source" ]; then
+        log_error "源码目录已存在，请先清理"
+        return 1
+    }
+    
+    git clone -b ${GIT_BRANCH} ${GIT_REPO} "${INSTALL_DIR}/source"
 }
 
 # 主函数
