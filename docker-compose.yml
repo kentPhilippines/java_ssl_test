@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  ssl-service:
+    build: .
+    container_name: ssl-service
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:8443"
+    volumes:
+      - ssl-data:/app/data
+      - ssl-logs:/app/logs
+      - ssl-conf:/app/conf
+    environment:
+      - ACME_EMAIL=admin@example.com
+      - ACME_STAGING=true
+      - TZ=Asia/Shanghai
+      - JAVA_OPTS=-Xmx512m -Xms256m -XX:+UseG1GC
+      # SSL配置
+      - SSL_KEY_STORE=/app/data/ssl/keystore.p12
+      - SSL_KEY_STORE_PASSWORD=changeit
+      - SSL_KEY_STORE_TYPE=PKCS12
+      # 数据库配置
+      - SPRING_DATASOURCE_URL=jdbc:h2:file:/app/data/db/ssl
+      - SPRING_DATASOURCE_USERNAME=sa
+      - SPRING_DATASOURCE_PASSWORD=password
+    networks:
+      - ssl-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/actuator/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  ssl-data:
+    name: ssl-data
+    driver: local
+  ssl-logs:
+    name: ssl-logs
+    driver: local
+  ssl-conf:
+    name: ssl-conf
+    driver: local
+
+networks:
+  ssl-network:
+    name: ssl-network
+    driver: bridge 
