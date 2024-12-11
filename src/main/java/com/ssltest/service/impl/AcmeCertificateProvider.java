@@ -65,7 +65,7 @@ public class AcmeCertificateProvider implements CertificateProvider {
     @Value("${acme.challenge.retry-interval:10}")
     private int challengeRetryInterval;
     
-    @Value("${acme.storage.path:${user.home}/.acme}")
+    @Value("${acme.storage.path:${user.dir}/data/ssl}")
     private String storagePath;
     
     @Autowired
@@ -75,15 +75,17 @@ public class AcmeCertificateProvider implements CertificateProvider {
     @Autowired
     private ChallengeService challengeService;
     
-    private static final String ACCOUNT_KEY_FILE = "account.key";
-    private static final String DOMAIN_KEY_FILE = "domain.key";
+    private static final String ACCOUNT_KEY_FILE = "keys/account.key";
+    private static final String DOMAIN_KEY_FILE = "keys/domain.key";
+    private static final String CERT_DIR = "certs";
 
     @PostConstruct
     public void init() {
-        File sslDir = new File(storagePath);
-        if (!sslDir.exists()) {
-            sslDir.mkdirs();
-        }
+        // 创建必要的目录结构
+        createDirectories(
+            new File(storagePath, "keys"),
+            new File(storagePath, CERT_DIR)
+        );
         log.info("ACME配置初始化完成:");
         log.info("服务器URL: {}", acmeServerUrl);
         log.info("账户邮箱: {}", accountEmail);
@@ -93,7 +95,19 @@ public class AcmeCertificateProvider implements CertificateProvider {
         log.info("通知天数: {}", notifyDays);
         log.info("验证类型: {}", challengeType);
     }
-
+    
+    private void createDirectories(File... dirs) {
+        for (File dir : dirs) {
+            if (!dir.exists()) {
+                if (!dir.mkdirs()) {
+                    log.error("无法创建目录: {}", dir.getAbsolutePath());
+                    throw new RuntimeException("无法创建必要的目录结构");
+                }
+                log.info("创建目录: {}", dir.getAbsolutePath());
+            }
+        }
+    }
+    
     @Override
     public CertificateResult applyCertificate(String domain) throws Exception {
         log.info("开始为域名{}申请证书", domain);
@@ -163,12 +177,16 @@ public class AcmeCertificateProvider implements CertificateProvider {
     
     private Account getOrCreateAccount(Session session) throws Exception {
         KeyPair accountKeyPair = loadOrCreateAccountKeyPair();
-        AccountBuilder accountBuilder = new AccountBuilder()
+        
+        // 尝试加载现有账户
+        Account account = new AccountBuilder()
                 .addContact("mailto:" + accountEmail)
                 .agreeToTermsOfService()
-                .useKeyPair(accountKeyPair);
-        
-        return accountBuilder.create(session);
+                .useKeyPair(accountKeyPair)
+                .create(session);
+                
+        log.info("ACME账户已就绪");
+        return account;
     }
     
     private void processAuthorization(Authorization auth) throws Exception {
@@ -213,18 +231,20 @@ public class AcmeCertificateProvider implements CertificateProvider {
                 .build();
     }
     
-    private KeyPair loadOrCreateAccountKeyPair() throws Exception {
-        File accountKeyFile = new File(ACCOUNT_KEY_FILE);
+    private KeyPair loadOrCreateAccountKeyPair() throws IOException {
+        File accountKeyFile = new File(storagePath, ACCOUNT_KEY_FILE);
+        
         if (accountKeyFile.exists()) {
             try (FileReader fr = new FileReader(accountKeyFile)) {
                 return KeyPairUtils.readKeyPair(fr);
             }
         }
-
+        
         KeyPair keyPair = KeyPairUtils.createKeyPair(2048);
         try (FileWriter fw = new FileWriter(accountKeyFile)) {
             KeyPairUtils.writeKeyPair(keyPair, fw);
         }
+        
         return keyPair;
     }
     
