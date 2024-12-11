@@ -6,9 +6,11 @@ import org.apache.tomcat.util.net.SSLHostConfig;
 import org.apache.tomcat.util.net.SSLHostConfigCertificate;
 import org.apache.tomcat.util.net.SSLHostConfigCertificate.Type;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory;
 import org.springframework.boot.web.embedded.tomcat.TomcatWebServer;
 import org.springframework.boot.web.servlet.context.ServletWebServerApplicationContext;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.io.*;
 import java.nio.file.Files;
@@ -27,41 +29,44 @@ public class SSLCertificateManager {
     @Autowired
     private ServletWebServerApplicationContext webServerAppCtx;
 
+    @Value("${server.port:8443}")
+    private int httpsPort;
+
+    @Value("${server.ssl.protocol:TLS}")
+    private String sslProtocol;
+
     public void updateCertificate(String certificatePem, String privateKeyPem) throws Exception {
-        // 验证证书内容
-        if (!certificatePem.contains("BEGIN CERTIFICATE") || !privateKeyPem.contains("BEGIN PRIVATE KEY")) {
-            throw new IllegalArgumentException("无效的证书或私钥格式");
-        }
+        validateCertificateAndKey(certificatePem, privateKeyPem);
         
         Path certFile = null;
         Path keyFile = null;
         
         try {
-            // 保存证书和私钥到临时文件
-            certFile = Files.createTempFile("cert_", ".pem");
-            keyFile = Files.createTempFile("key_", ".pem");
+            certFile = createTempFile("cert_", ".pem", certificatePem);
+            keyFile = createTempFile("key_", ".pem", privateKeyPem);
             
-            Files.write(certFile, certificatePem.getBytes());
-            Files.write(keyFile, privateKeyPem.getBytes());
-            
-            // 设置文件权限
-            Files.setPosixFilePermissions(certFile, PosixFilePermissions.fromString("rw-------"));
-            Files.setPosixFilePermissions(keyFile, PosixFilePermissions.fromString("rw-------"));
-            
-            // 配置HTTPS连接器
             configureSslConnector(certFile, keyFile);
+            log.info("SSL证书更新成功");
             
         } catch (Exception e) {
-            log.error("更新SSL证书失败", e);
-            throw new RuntimeException("证书更新失败: " + e.getMessage());
+            log.error("更新SSL证书失败: {}", e.getMessage(), e);
+            throw new RuntimeException("证书更新失败: " + e.getMessage(), e);
         } finally {
-            // 安全清理临时文件
-            if (certFile != null) {
-                secureDelete(certFile);
-            }
-            if (keyFile != null) {
-                secureDelete(keyFile);
-            }
+            secureDelete(certFile);
+            secureDelete(keyFile);
+        }
+    }
+
+    private Path createTempFile(String prefix, String suffix, String content) throws IOException {
+        Path file = Files.createTempFile(prefix, suffix);
+        Files.write(file, content.getBytes());
+        Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-------"));
+        return file;
+    }
+
+    private void validateCertificateAndKey(String cert, String key) {
+        if (!cert.contains("BEGIN CERTIFICATE") || !key.contains("BEGIN PRIVATE KEY")) {
+            throw new IllegalArgumentException("无效的证书或私钥格式");
         }
     }
 
@@ -79,7 +84,7 @@ public class SSLCertificateManager {
         
         // 创建新的HTTPS连接器
         Connector httpsConnector = new Connector(TomcatServletWebServerFactory.DEFAULT_PROTOCOL);
-        httpsConnector.setPort(8443);
+        httpsConnector.setPort(httpsPort);
         httpsConnector.setSecure(true);
         httpsConnector.setScheme("https");
         
@@ -89,7 +94,7 @@ public class SSLCertificateManager {
         cert.setCertificateKeyFile(keyFile.toString());
         
         // 配置SSL参数
-        sslHostConfig.setProtocols("TLSv1.2,TLSv1.3");
+        sslHostConfig.setProtocols(sslProtocol);
         sslHostConfig.setCiphers("TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384");
         
         sslHostConfig.addCertificate(cert);
@@ -114,81 +119,5 @@ public class SSLCertificateManager {
         } catch (Exception e) {
             log.warn("清理临时文件失败: {}", file, e);
         }
-    }
-
-    private X509Certificate convertPemToCertificate(String certificatePem) throws Exception {
-        // 移除PEM头尾和换行符
-        String cleanCert = certificatePem
-                .replace("-----BEGIN CERTIFICATE-----", "")
-                .replace("-----END CERTIFICATE-----", "")
-                .replaceAll("\\s", "");
-        
-        byte[] certBytes = Base64.getDecoder().decode(cleanCert);
-        CertificateFactory cf = CertificateFactory.getInstance("X.509");
-        return (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certBytes));
-    }
-
-    private PrivateKey convertPemToPrivateKey(String privateKeyPem) throws Exception {
-        // 移除PEM头尾和换行符
-        String cleanKey = privateKeyPem
-                .replace("-----BEGIN PRIVATE KEY-----", "")
-                .replace("-----END PRIVATE KEY-----", "")
-                .replaceAll("\\s", "");
-        
-        byte[] keyBytes = Base64.getDecoder().decode(cleanKey);
-        PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(keyBytes);
-        KeyFactory kf = KeyFactory.getInstance("RSA");
-        return kf.generatePrivate(spec);
-    }
-
-    private void saveToKeyStore(X509Certificate cert, PrivateKey privateKey) throws Exception {
-        File keystoreFile = new File(KEYSTORE_PATH);
-        if (!keystoreFile.getParentFile().exists()) {
-            keystoreFile.getParentFile().mkdirs();
-        }
-
-        KeyStore keyStore = KeyStore.getInstance("JKS");
-        keyStore.load(null, null);
-        keyStore.setKeyEntry("tomcat", privateKey, KEYSTORE_PASSWORD.toCharArray(),
-                new X509Certificate[]{cert});
-        
-        try (FileOutputStream fos = new FileOutputStream(keystoreFile)) {
-            keyStore.store(fos, KEYSTORE_PASSWORD.toCharArray());
-        }
-    }
-
-    private void updateHttpsConnector() throws Exception {
-        TomcatWebServer tomcatWebServer = (TomcatWebServer) server.getWebServer();
-        org.apache.catalina.Service service = tomcatWebServer.getTomcat().getService();
-
-        // 查找或创建HTTPS连接器
-        Connector httpsConnector = null;
-        for (Connector connector : service.findConnectors()) {
-            if (connector.getSecure() && connector.getPort() == HTTPS_PORT) {
-                httpsConnector = connector;
-                break;
-            }
-        }
-
-        if (httpsConnector == null) {
-            // 创建新的HTTPS连接器
-            httpsConnector = new Connector(TomcatWebServer.DEFAULT_PROTOCOL);
-            httpsConnector.setPort(HTTPS_PORT);
-            httpsConnector.setSecure(true);
-            httpsConnector.setScheme("https");
-            
-            // 配置SSL
-            httpsConnector.addProperty("SSLEnabled", "true");
-            httpsConnector.addProperty("keystoreFile", KEYSTORE_PATH);
-            httpsConnector.addProperty("keystorePass", KEYSTORE_PASSWORD);
-            httpsConnector.addProperty("keyAlias", "tomcat");
-            httpsConnector.addProperty("clientAuth", "false");
-            
-            service.addConnector(httpsConnector);
-        }
-
-        // 重启连接器以应用新的SSL配置
-        httpsConnector.stop();
-        httpsConnector.start();
     }
 } 

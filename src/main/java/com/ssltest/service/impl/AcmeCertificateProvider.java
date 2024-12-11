@@ -16,10 +16,18 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import javax.annotation.PostConstruct;
 import java.io.*;
 import java.security.KeyPair;
+import java.security.PrivateKey;
+import java.security.cert.X509Certificate;
 import java.time.LocalDateTime;
+import java.util.Base64;
 import java.util.List;
+
+import org.bouncycastle.openssl.jcajce.JcaPEMWriter;
+import org.bouncycastle.util.io.pem.PemObject;
+import org.bouncycastle.util.io.pem.PemWriter;
 
 @Slf4j
 @Service
@@ -31,12 +39,8 @@ public class AcmeCertificateProvider implements CertificateProvider {
     @Value("${acme.account.email}")
     private String accountEmail;
     
-    @Value("${acme.challenge.path}")
-    private String challengePath;
-    
     @Autowired
     private CertificateRepository certificateRepository;
-
     
     @Autowired
     private KeyStoreService keyStoreService;
@@ -46,6 +50,14 @@ public class AcmeCertificateProvider implements CertificateProvider {
     
     private static final String ACCOUNT_KEY_FILE = "ssl/account.key";
     private static final String DOMAIN_KEY_FILE = "ssl/domain.key";
+
+    @PostConstruct
+    public void init() {
+        File sslDir = new File("ssl");
+        if (!sslDir.exists()) {
+            sslDir.mkdirs();
+        }
+    }
 
     @Override
     public CertificateResult applyCertificate(String domain) throws Exception {
@@ -59,22 +71,19 @@ public class AcmeCertificateProvider implements CertificateProvider {
         }
         
         try {
-            // 获取或创建ACME账户
             Session session = new Session(acmeServerUrl);
             Account account = getOrCreateAccount(session);
-            
-            // 生成域名密钥对
             KeyPair domainKeyPair = generateOrLoadDomainKeyPair();
             
-            // 开始订单流程
+            // 申请证书
             Order order = account.newOrder().domains(domain).create();
             
-            // 处理域名验证
+            // 域名验证
             for (Authorization auth : order.getAuthorizations()) {
                 processAuthorization(auth);
             }
             
-            // 生成CSR并成订单
+            // 生成CSR并完成订单
             CSRBuilder csrb = new CSRBuilder();
             csrb.addDomain(domain);
             csrb.sign(domainKeyPair);
@@ -82,29 +91,20 @@ public class AcmeCertificateProvider implements CertificateProvider {
             order.execute(csrb.getEncoded());
             Certificate certificate = order.getCertificate();
             
-            // 保存证书信息
-            CertificateEntity certEntity = new CertificateEntity();
-            certEntity.setDomain(domain);
-            certEntity.setCertificatePem(certificate.getCertificate());
-            certEntity.setPrivateKeyPem(KeyPairUtils.writePrivateKey(domainKeyPair.getPrivate()));
-            certEntity.setIssuedAt(LocalDateTime.now());
-            certEntity.setExpiresAt(LocalDateTime.now().plusDays(90));
-            certEntity.setStatus("ACTIVE");
-            certEntity.setAcmeAccountUrl(account.getLocation().toString());
-            
-            certificateRepository.save(certEntity);
+            // 保存证书
+            CertificateEntity certEntity = saveCertificate(domain, certificate, domainKeyPair, account);
             
             return convertToResult(certEntity);
             
         } catch (Exception e) {
             log.error("证书申请失败: {}", e.getMessage(), e);
-            throw new RuntimeException("证书申请失败", e);
+            throw new RuntimeException("证书申请失败: " + e.getMessage(), e);
         }
     }
     
     @Scheduled(cron = "0 0 0 * * ?") // 每天凌晨执行
     public void renewCertificates() {
-        log.info("开始检查证书续期");
+        log.info("开始检查证书期");
         try {
             LocalDateTime renewalDate = LocalDateTime.now().plusDays(30);
             List<CertificateEntity> certificates = certificateRepository
@@ -142,24 +142,28 @@ public class AcmeCertificateProvider implements CertificateProvider {
         }
         
         try {
-            // 保存验证内容
             challengeService.saveChallenge(challenge.getToken(), challenge.getAuthorization());
-            
-            // 触发验证
             challenge.trigger();
             
-            // 等待验证完成
-            while (auth.getStatus() != Status.VALID) {
+            int attempts = 0;
+            while (auth.getStatus() != Status.VALID && attempts < 10) {
                 if (auth.getStatus() == Status.INVALID) {
                     throw new Exception("域名验证失败");
                 }
                 Thread.sleep(3000L);
                 auth.update();
+                attempts++;
+            }
+            
+            if (auth.getStatus() != Status.VALID) {
+                throw new Exception("域名验证超时");
             }
             
             log.info("域名验证成功");
+        } catch (Exception e) {
+            log.error("域名验证失败: {}", e.getMessage());
+            throw e;
         } finally {
-            // 清理验证内容
             challengeService.removeChallenge(challenge.getToken());
         }
     }
@@ -201,6 +205,46 @@ public class AcmeCertificateProvider implements CertificateProvider {
             KeyPairUtils.writeKeyPair(keyPair, fw);
         }
         return keyPair;
+    }
+    
+    private CertificateEntity saveCertificate(String domain, Certificate certificate, KeyPair domainKeyPair, Account account) throws Exception {
+        // 获取证书并转换为PEM格式
+        X509Certificate x509Cert = certificate.getCertificate();
+        StringWriter writer = new StringWriter();
+        try (PemWriter pemWriter = new PemWriter(writer)) {
+            pemWriter.writeObject(new PemObject("CERTIFICATE", x509Cert.getEncoded()));
+        }
+        String certificatePem = writer.toString();
+        
+        // 获取私钥PEM
+        StringWriter privateKeyWriter = new StringWriter();
+        try (PemWriter pemWriter = new PemWriter(privateKeyWriter)) {
+            pemWriter.writeObject(new PemObject("PRIVATE KEY", domainKeyPair.getPrivate().getEncoded()));
+        }
+        String privateKeyPem = privateKeyWriter.toString();
+
+        // 验证证书格式
+        if (!certificatePem.contains("BEGIN CERTIFICATE") || !privateKeyPem.contains("BEGIN PRIVATE KEY")) {
+            throw new IllegalStateException("无效的证书或私钥格式");
+        }
+        
+        // 构建证书实体
+        CertificateEntity certEntity = CertificateEntity.builder()
+                .domain(domain)
+                .certificatePem(certificatePem)
+                .privateKeyPem(privateKeyPem)
+                .issuedAt(LocalDateTime.now())
+                .expiresAt(LocalDateTime.now().plusDays(90))
+                .status("ACTIVE")
+                .acmeAccountUrl(account.getLocation().toString())
+                .build();
+        
+        try {
+            return certificateRepository.save(certEntity);
+        } catch (Exception e) {
+            log.error("保存证书信息失败: {}", e.getMessage());
+            throw new RuntimeException("保存证书失败", e);
+        }
     }
     
     // 其他辅助方法...

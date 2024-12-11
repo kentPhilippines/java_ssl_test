@@ -1,7 +1,6 @@
 package com.ssltest.service;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
@@ -17,9 +16,6 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ChallengeService {
     
     private final ConcurrentHashMap<String, String> challengeTokens = new ConcurrentHashMap<>();
-    
-    @Value("${acme.challenge.path}")
-    private String challengePath;
     
     public void saveChallenge(String token, String authorization) {
         log.info("保存验证令牌: {}", token);

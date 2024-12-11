@@ -5,6 +5,7 @@ import com.ssltest.service.CertificateProvider;
 import com.ssltest.service.SSLCertificateManager;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.web.bind.annotation.*;
 
 @Slf4j
@@ -15,6 +16,7 @@ public class SSLTestController {
     private SSLCertificateManager sslManager;
     
     @Autowired
+    @Qualifier("retryableAcmeCertificateProvider")
     private CertificateProvider certificateProvider;
 
     @GetMapping("/ssl-test")

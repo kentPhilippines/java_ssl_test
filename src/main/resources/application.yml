@@ -14,34 +14,16 @@ spring:
     hibernate:
       ddl-auto: update
     show-sql: true
-  mail:
-    host: smtp.example.com
-    port: 587
-    username: ${SMTP_USERNAME}
-    password: ${SMTP_PASSWORD}
-    properties:
-      mail.smtp.auth: true
-      mail.smtp.starttls.enable: true
 
 acme:
   server:
     url: https://acme-v02.api.letsencrypt.org/directory
   account:
-    email: your-email@example.com
-  challenge:
-    enabled: true
-  retry:
-    max-attempts: 3
-    initial-delay: 5000
-    multiplier: 2
+    email: admin@example.com
   security:
     key-store-type: PKCS12
-    key-store-password: ${KEYSTORE_PASSWORD}
+    key-store-password: changeit
     allow-http: true
-
-alert:
-  email:
-    to: admin@example.com
 
 logging:
   level:
