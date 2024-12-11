@@ -6,6 +6,14 @@ APP_USER="$(whoami)"
 APP_GROUP="$(id -gn)"
 INSTALL_DIR="/opt/ssl-java"
 
+# ACME配置
+ACME_EMAIL="${ACME_EMAIL:-admin@example.com}"
+ACME_STAGING="${ACME_STAGING:-true}"  # 默认使用测试环境
+ACME_SERVER_URL="https://acme-staging-v02.api.letsencrypt.org/directory"
+if [ "${ACME_STAGING}" = "false" ]; then
+    ACME_SERVER_URL="https://acme-v02.api.letsencrypt.org/directory"
+fi
+
 # JDK配置
 JDK_VERSION="17"
 JDK_PACKAGE_DEBIAN="openjdk-${JDK_VERSION}-jdk"
@@ -49,7 +57,7 @@ NC='\033[0m'
 JAVA_CMD="${JDK_DIR}/bin/java"
 MAVEN_CMD="${MAVEN_DIR}/bin/mvn"
 
-# 添加命令执行日志函数
+# 添加命令执行日��函数
 log_cmd() {
     echo -e "${BLUE}[CMD]${NC} $1"
 }
@@ -338,9 +346,12 @@ logging:
 
 acme:
   server:
-    url: https://acme-v02.api.letsencrypt.org/directory
+    # 测试环境使用 Let's Encrypt 的测试服务器
+    url: https://acme-staging-v02.api.letsencrypt.org/directory
+    # 生产环境使用
+    # url: https://acme-v02.api.letsencrypt.org/directory
   account:
-    email: admin@example.com
+    email: ${ACME_EMAIL:-admin@example.com}
   security:
     key-store-type: PKCS12
     key-store-password: changeit
@@ -348,6 +359,28 @@ acme:
     key-store: ${DATA_DIR}/ssl/keystore.p12
   storage:
     path: ${DATA_DIR}/acme
+    # ACME 客户端配置
+    client:
+      # 证书有效期少于多少天时自动更新
+      renewal-days: 30
+      # 证书到期提醒��数
+      notify-days: 7
+      # 是否自动更新证书
+      auto-renewal: true
+      # 证书吊销检查间隔（小时）
+      ocsp-check-hours: 24
+    # 域名验证配置
+    challenge:
+      # 验证类型：HTTP-01 或 DNS-01
+      type: HTTP-01
+      # HTTP-01 验证监听端口
+      http-port: 80
+      # 验证超时时间（秒）
+      timeout: 180
+      # 验证重试次数
+      retries: 3
+      # 验证重试间隔（秒）
+      retry-interval: 10
 EOF
 
     # 设置配置文件权限
@@ -413,7 +446,7 @@ StartLimitBurst=3
 StandardOutput=append:${INSTALL_DIR}/logs/stdout.log
 StandardError=append:${INSTALL_DIR}/logs/stderr.log
 
-# 资源���制
+# 资源限制
 LimitNOFILE=65535
 TimeoutStartSec=180
 TimeoutStopSec=120
@@ -458,6 +491,11 @@ EOF
 build_application() {
     log_info "开始构建..."
     
+    local SOURCE_DIR="${INSTALL_DIR}/source"
+    local TARGET_DIR="${SOURCE_DIR}/target"
+    local BUILD_JAR="${TARGET_DIR}/${APP_NAME}.jar"
+    local FINAL_JAR="${INSTALL_DIR}/${APP_NAME}.jar"
+    
     # 验证环境变量
     if [ -z "${JAVA_HOME}" ] || [ ! -d "${JAVA_HOME}" ]; then
         log_error "JAVA_HOME 未正确设置: ${JAVA_HOME}"
@@ -467,6 +505,12 @@ build_application() {
     if [ -z "${M2_HOME}" ] || [ ! -d "${M2_HOME}" ]; then
         log_error "M2_HOME 未正确设置: ${M2_HOME}"
         return 1
+    fi
+    
+    # 备份当前运行的JAR
+    if [ -f "${FINAL_JAR}" ]; then
+        log_info "备份当前JAR文件..."
+        cp "${FINAL_JAR}" "${BACKUP_DIR}/${APP_NAME}-$(date +%Y%m%d%H%M%S).jar"
     fi
     
     cd "${SOURCE_DIR}"
@@ -500,6 +544,25 @@ build_application() {
     chown ${APP_USER}:${APP_GROUP} "${FINAL_JAR}"
     
     log_info "构建完成"
+    return 0
+}
+
+# 检查构建结果
+check_build_result() {
+    local FINAL_JAR="${INSTALL_DIR}/${APP_NAME}.jar"
+    
+    # 检查最终JAR文件
+    if [ ! -f "${FINAL_JAR}" ]; then
+        log_error "构建后JAR文件不存在"
+        return 1
+    fi
+    
+    # 验证JAR文件
+    if ! jar tvf "${FINAL_JAR}" > /dev/null 2>&1; then
+        log_error "JAR文件验证失败"
+        return 1
+    fi
+    
     return 0
 }
 
@@ -577,7 +640,7 @@ git_clone() {
     log_info "代码克隆完成，当前版本: $(cat ${VERSION_FILE})"
 }
 
-# 安装应用
+# 安装���用
 install_application() {
     log_info "开始安装应用..."
     
@@ -640,7 +703,7 @@ check_java_environment() {
     log_info "检查Java环境..."
     
     if [ ! -x "${JDK_DIR}/bin/java" ]; then
-        log_error "Java可执行文件不存在或无执行权限"
+        log_error "Java可执行文件不存在���无执行权限"
         return 1
     fi
     
@@ -859,7 +922,7 @@ backup_current_version() {
     cp "${INSTALL_DIR}/${APP_NAME}.jar" "${backup_file}"
 }
 
-# 创建回滚脚本
+# 创��回滚脚本
 create_rollback_script() {
     local version="$1"
     local backup_file="$2"
@@ -956,7 +1019,7 @@ cleanup_environment() {
     echo -e "${RED}警告: 此操作将清空所有应用数据!${NC}"
     echo -e "${YELLOW}将清理以下内容:${NC}"
     echo "1. 应用程文件"
-    echo "2. 日志文件"
+    echo "2. 日志���件"
     echo "3. 系统服务配置"
     echo "4. 端口配置"
     echo
@@ -1203,12 +1266,6 @@ check_directory_permissions() {
         
         if [ ! -d "$dir" ]; then
             log_error "目录不存在: $dir"
-            return 1
-        fi
-        
-        local actual_perm=$(stat -c %a "$dir")
-        if [ "$actual_perm" != "$perm" ]; then
-            log_error "目录权限不正确: $dir (期望:$perm, 实际:$actual_perm)"
             return 1
         fi
     done

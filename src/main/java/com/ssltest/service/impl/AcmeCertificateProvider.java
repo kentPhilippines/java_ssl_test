@@ -32,11 +32,41 @@ import org.bouncycastle.util.io.pem.PemWriter;
 @Service
 public class AcmeCertificateProvider implements CertificateProvider {
     
-    @Value("${acme.server.url}")
+    @Value("${acme.server.url:https://acme-staging-v02.api.letsencrypt.org/directory}")
     private String acmeServerUrl;
     
-    @Value("${acme.account.email}")
+    @Value("${acme.account.email:admin@example.com}")
     private String accountEmail;
+    
+    @Value("${acme.client.renewal-days:30}")
+    private int renewalDays;
+    
+    @Value("${acme.client.notify-days:7}")
+    private int notifyDays;
+    
+    @Value("${acme.client.auto-renewal:true}")
+    private boolean autoRenewal;
+    
+    @Value("${acme.client.ocsp-check-hours:24}")
+    private int ocspCheckHours;
+    
+    @Value("${acme.challenge.type:HTTP-01}")
+    private String challengeType;
+    
+    @Value("${acme.challenge.http-port:80}")
+    private int challengeHttpPort;
+    
+    @Value("${acme.challenge.timeout:180}")
+    private int challengeTimeout;
+    
+    @Value("${acme.challenge.retries:3}")
+    private int challengeRetries;
+    
+    @Value("${acme.challenge.retry-interval:10}")
+    private int challengeRetryInterval;
+    
+    @Value("${acme.storage.path:${user.home}/.acme}")
+    private String storagePath;
     
     @Autowired
     private CertificateRepository certificateRepository;
@@ -45,15 +75,23 @@ public class AcmeCertificateProvider implements CertificateProvider {
     @Autowired
     private ChallengeService challengeService;
     
-    private static final String ACCOUNT_KEY_FILE = "ssl/account.key";
-    private static final String DOMAIN_KEY_FILE = "ssl/domain.key";
+    private static final String ACCOUNT_KEY_FILE = "account.key";
+    private static final String DOMAIN_KEY_FILE = "domain.key";
 
     @PostConstruct
     public void init() {
-        File sslDir = new File("ssl");
+        File sslDir = new File(storagePath);
         if (!sslDir.exists()) {
             sslDir.mkdirs();
         }
+        log.info("ACME配置初始化完成:");
+        log.info("服务器URL: {}", acmeServerUrl);
+        log.info("账户邮箱: {}", accountEmail);
+        log.info("存储路径: {}", storagePath);
+        log.info("自动更新: {}", autoRenewal);
+        log.info("更新天数: {}", renewalDays);
+        log.info("通知天数: {}", notifyDays);
+        log.info("验证类型: {}", challengeType);
     }
 
     @Override
@@ -62,7 +100,8 @@ public class AcmeCertificateProvider implements CertificateProvider {
         
         // 检查是否已有有效证书
         CertificateEntity existingCert = certificateRepository.findByDomain(domain);
-        if (existingCert != null && existingCert.getExpiresAt().isAfter(LocalDateTime.now())) {
+        if (existingCert != null && 
+            existingCert.getExpiresAt().isAfter(LocalDateTime.now().plusDays(renewalDays))) {
             log.info("域名{}已有有效证书", domain);
             return convertToResult(existingCert);
         }
