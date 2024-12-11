@@ -1,24 +1,17 @@
 package com.ssltest.service;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileWriter;
 import java.security.KeyStore;
-import java.security.KeyStore.PasswordProtection;
-import java.security.KeyStore.ProtectionParameter;
-import java.security.KeyStore.SecretKeyEntry;
-import java.security.KeyStore.TrustedCertificateEntry;
-import java.security.cert.Certificate;
-import java.security.cert.CertificateFactory;
-import java.security.cert.X509Certificate;
-import java.util.Enumeration;
 
 import javax.annotation.PostConstruct;
 
 @Service
+@Slf4j
 public class KeyStoreService {
     
     @Value("${acme.security.key-store-type:PKCS12}")
