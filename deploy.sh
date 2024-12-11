@@ -39,19 +39,129 @@ check_docker() {
     log_info "检查Docker环境..."
     
     if ! command -v docker &> /dev/null; then
-        log_error "Docker未安装"
-        return 1
+        log_warn "Docker未安装，尝试安装..."
+        install_docker
+        if [ $? -ne 0 ]; then
+            log_error "Docker安装失败"
+            return 1
+        fi
     fi
     
     if ! command -v docker-compose &> /dev/null; then
-        log_error "Docker Compose未安装"
-        return 1
+        log_warn "Docker Compose未安装，尝试安装..."
+        install_docker_compose
+        if [ $? -ne 0 ]; then
+            log_error "Docker Compose安装失败"
+            return 1
+        fi
     fi
     
     if ! docker info &> /dev/null; then
-        log_error "Docker服务未启动或当前用户无权限"
+        log_warn "Docker服务未启动或当前用户无权限，尝试修复..."
+        fix_docker_permissions
+        if [ $? -ne 0 ]; then
+            log_error "Docker权限配置失败"
+            return 1
+        fi
+    fi
+    
+    return 0
+}
+
+# 安装Docker
+install_docker() {
+    log_info "安装Docker..."
+    
+    # 检测操作系统
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS=$NAME
+    else
+        log_error "无法确定操作系统类型"
         return 1
     fi
+    
+    case "$OS" in
+        *"Ubuntu"*|*"Debian"*)
+            # 安装依赖
+            sudo apt-get update
+            sudo apt-get install -y \
+                apt-transport-https \
+                ca-certificates \
+                curl \
+                gnupg \
+                lsb-release
+            
+            # 添加Docker官方GPG密钥
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+            
+            # 设置稳定版仓库
+            echo \
+                "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
+                $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+            
+            # 安装Docker
+            sudo apt-get update
+            sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+            ;;
+            
+        *"CentOS"*|*"Red Hat"*|*"Fedora"*)
+            # 安装依赖
+            sudo yum install -y yum-utils
+            
+            # 添加Docker仓库
+            sudo yum-config-manager \
+                --add-repo \
+                https://download.docker.com/linux/centos/docker-ce.repo
+            
+            # 安装Docker
+            sudo yum install -y docker-ce docker-ce-cli containerd.io
+            ;;
+            
+        *)
+            log_error "不支持的操作系统: $OS"
+            return 1
+            ;;
+    esac
+    
+    # 启动Docker服务
+    sudo systemctl start docker
+    sudo systemctl enable docker
+    
+    return 0
+}
+
+# 安装Docker Compose
+install_docker_compose() {
+    log_info "安装Docker Compose..."
+    
+    # 下载最新版Docker Compose
+    COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep 'tag_name' | cut -d'"' -f4)
+    sudo curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    
+    # 添加执行权限
+    sudo chmod +x /usr/local/bin/docker-compose
+    
+    return 0
+}
+
+# 修复Docker权限
+fix_docker_permissions() {
+    log_info "配置Docker权限..."
+    
+    # 创建docker用户组
+    sudo groupadd docker 2>/dev/null || true
+    
+    # 将当前用户添加到docker组
+    sudo usermod -aG docker $USER
+    
+    # 启动Docker服务
+    sudo systemctl start docker
+    sudo systemctl enable docker
+    
+    # 提示用户重新登录
+    log_warn "请重新登录以使Docker权限生效"
+    log_warn "执行命令: su - $USER"
     
     return 0
 }
