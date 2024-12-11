@@ -141,7 +141,7 @@ install_docker() {
     
     # 配置镜像加速
     sudo mkdir -p /etc/docker
-    sudo tee /etc/docker/daemon.json <<-'EOF'
+    sudo tee /etc/docker/daemon.json <<-EOF
     {
       "registry-mirrors": [
         "https://registry.cn-hangzhou.aliyuncs.com",
