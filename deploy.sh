@@ -11,7 +11,7 @@ DATA_DIR="${INSTALL_DIR}/data"
 JDK_VERSION="11"
 
 # Git相关配置
-GIT_REPO="https://github.com/your-org/ssl-test-project.git"
+GIT_REPO="https://github.com/kentPhilippines/java_ssl_test.git"
 GIT_BRANCH="main"
 VERSION_FILE="${INSTALL_DIR}/VERSION"
 
