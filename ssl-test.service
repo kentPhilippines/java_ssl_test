@@ -1,0 +1,16 @@
+[Unit]
+Description=SSL Test Application
+After=network.target
+
+[Service]
+User=your-user
+Group=your-group
+Environment="KEYSTORE_PASSWORD=your-keystore-password"
+Environment="SMTP_USERNAME=your-smtp-username"
+Environment="SMTP_PASSWORD=your-smtp-password"
+ExecStart=/usr/bin/java -jar /path/to/ssl-test-project-1.0-SNAPSHOT.jar
+WorkingDirectory=/path/to/app
+Restart=always
+
+[Install]
+WantedBy=multi-user.target 

@@ -1,0 +1,15 @@
+ssl-test-project/
+├── src/
+│   ├── main/
+│   │   ├── java/
+│   │   │   └── com/
+│   │   │       └── ssltest/
+│   │   │           ├── SSLTestApplication.java
+│   │   │           ├── config/
+│   │   │           │   └── DynamicSSLConfig.java
+│   │   │           └── controller/
+│   │   │               └── SSLTestController.java
+│   │   └── resources/
+│   │       └── application.yml
+├── ssl/                  # SSL证书存放目录
+└── pom.xml              # Maven配置文件 
