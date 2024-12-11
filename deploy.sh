@@ -413,7 +413,7 @@ StartLimitBurst=3
 StandardOutput=append:${INSTALL_DIR}/logs/stdout.log
 StandardError=append:${INSTALL_DIR}/logs/stderr.log
 
-# 资源限制
+# 资源���制
 LimitNOFILE=65535
 TimeoutStartSec=180
 TimeoutStopSec=120
@@ -458,27 +458,26 @@ EOF
 build_application() {
     log_info "开始构建..."
     
-    local SOURCE_DIR="${INSTALL_DIR}/source"
-    local TARGET_DIR="${SOURCE_DIR}/target"
-    local BUILD_JAR="${TARGET_DIR}/${APP_NAME}.jar"
-    local FINAL_JAR="${INSTALL_DIR}/${APP_NAME}.jar"
-    
-    # 备份当前运行的JAR
-    if [ -f "${FINAL_JAR}" ]; then
-        log_info "备份当前JAR文件..."
-        cp "${FINAL_JAR}" "${BACKUP_DIR}/${APP_NAME}-$(date +%Y%m%d%H%M%S).jar"
+    # 验证环境变量
+    if [ -z "${JAVA_HOME}" ] || [ ! -d "${JAVA_HOME}" ]; then
+        log_error "JAVA_HOME 未正确设置: ${JAVA_HOME}"
+        return 1
     fi
     
-    # 进入源码目录
-    cd "${SOURCE_DIR}"
+    if [ -z "${M2_HOME}" ] || [ ! -d "${M2_HOME}" ]; then
+        log_error "M2_HOME 未正确设置: ${M2_HOME}"
+        return 1
+    fi
     
-    # 设置Maven环境变量
-    export MAVEN_OPTS="-Xmx512m"
-    export MAVEN_HOME="${MAVEN_DIR}"
-    export PATH="${MAVEN_HOME}/bin:$PATH"
+    cd "${SOURCE_DIR}"
     
     # 执行构建
     log_info "执行Maven构建..."
+    log_info "使用以下环境变量:"
+    log_info "JAVA_HOME=${JAVA_HOME}"
+    log_info "M2_HOME=${M2_HOME}"
+    log_info "MAVEN_OPTS=${MAVEN_OPTS}"
+    
     if ! "${MAVEN_DIR}/bin/mvn" clean package -DskipTests; then
         log_error "Maven构建失败"
         return 1
@@ -721,7 +720,7 @@ post_build_check() {
     return 0
 }
 
-# ���查命令是否存在
+# 检查命令是否存在
 check_command() {
     if ! command -v $1 &> /dev/null; then
         log_error "$1 未安装"
@@ -987,6 +986,31 @@ update_application() {
         return 1
     fi
     
+    # 设置环境变量
+    export JAVA_HOME="${JDK_DIR}"
+    export PATH="${JAVA_HOME}/bin:$PATH"
+    export M2_HOME="${MAVEN_DIR}"
+    export PATH="${M2_HOME}/bin:$PATH"
+    export MAVEN_OPTS="-Xmx512m"
+    
+    # 验证环境变量
+    log_info "验证环境变量..."
+    log_info "JAVA_HOME=${JAVA_HOME}"
+    log_info "M2_HOME=${M2_HOME}"
+    log_info "PATH=${PATH}"
+    
+    # 验证Java安装
+    if ! "${JDK_DIR}/bin/java" -version; then
+        log_error "Java验证失败"
+        return 1
+    fi
+    
+    # 验证Maven安装
+    if ! "${MAVEN_DIR}/bin/mvn" -version; then
+        log_error "Maven验证失败"
+        return 1
+    fi
+    
     log_cmd "cd ${INSTALL_DIR}/source"
     cd "${INSTALL_DIR}/source"
     
@@ -1014,6 +1038,10 @@ update_application() {
     # 更新代码
     log_cmd "git pull origin ${GIT_BRANCH}"
     git pull origin ${GIT_BRANCH}
+    
+    # 设置Maven配置
+    export MAVEN_OPTS="-Xmx512m -Dmaven.repo.local=${MAVEN_REPO}"
+    export MAVEN_HOME="${MAVEN_DIR}"
     
     # 构建应用
     if ! build_application; then
@@ -1224,7 +1252,7 @@ main() {
     esac
 }
 
-# 如果没有参数，显示帮助信息
+# 如果没有参数，示帮助信息
 if [ $# -eq 0 ]; then
     show_help
     exit 1
