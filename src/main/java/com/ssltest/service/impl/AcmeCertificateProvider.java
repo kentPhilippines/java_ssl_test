@@ -5,7 +5,6 @@ import com.ssltest.model.CertificateResult;
 import com.ssltest.repository.CertificateRepository;
 import com.ssltest.service.CertificateProvider;
 import com.ssltest.service.ChallengeService;
-import com.ssltest.service.KeyStoreService;
 import lombok.extern.slf4j.Slf4j;
 import org.shredzone.acme4j.*;
 import org.shredzone.acme4j.challenge.Http01Challenge;
@@ -41,9 +40,7 @@ public class AcmeCertificateProvider implements CertificateProvider {
     
     @Autowired
     private CertificateRepository certificateRepository;
-    
-    @Autowired
-    private KeyStoreService keyStoreService;
+
     
     @Autowired
     private ChallengeService challengeService;
