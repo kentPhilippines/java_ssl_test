@@ -46,7 +46,8 @@ check_docker() {
             return 1
         fi
     fi
-    
+
+
     if ! command -v docker-compose &> /dev/null; then
         log_warn "Docker Compose未安装，尝试安装..."
         install_docker_compose
@@ -80,6 +81,7 @@ install_docker() {
         log_error "无法确定操作系统类型"
         return 1
     fi
+    
     
     case "$OS" in
         *"Ubuntu"*|*"Debian"*)
