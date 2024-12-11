@@ -4,6 +4,8 @@ import com.ssltest.entity.CertificateEntity;
 import com.ssltest.model.CertificateResult;
 import com.ssltest.repository.CertificateRepository;
 import com.ssltest.service.CertificateProvider;
+import com.ssltest.service.ChallengeService;
+import com.ssltest.service.KeyStoreService;
 import lombok.extern.slf4j.Slf4j;
 import org.shredzone.acme4j.*;
 import org.shredzone.acme4j.challenge.Http01Challenge;
@@ -34,9 +36,7 @@ public class AcmeCertificateProvider implements CertificateProvider {
     
     @Autowired
     private CertificateRepository certificateRepository;
-    
-    @Autowired
-    private AlertService alertService;
+
     
     @Autowired
     private KeyStoreService keyStoreService;
@@ -74,7 +74,7 @@ public class AcmeCertificateProvider implements CertificateProvider {
                 processAuthorization(auth);
             }
             
-            // 生成CSR并��成订单
+            // 生成CSR并成订单
             CSRBuilder csrb = new CSRBuilder();
             csrb.addDomain(domain);
             csrb.sign(domainKeyPair);
@@ -117,12 +117,10 @@ public class AcmeCertificateProvider implements CertificateProvider {
                 } catch (Exception e) {
                     String message = String.format("域名 %s 的证书续期失败: %s", 
                             cert.getDomain(), e.getMessage());
-                    alertService.sendAlert("证书续期失败", message);
                     log.error(message, e);
                 }
             }
         } catch (Exception e) {
-            alertService.sendAlert("证书续期检查失败", e.getMessage());
             log.error("证书续期检查失败", e);
         }
     }
@@ -173,6 +171,36 @@ public class AcmeCertificateProvider implements CertificateProvider {
                 .privateKeyPem(entity.getPrivateKeyPem())
                 .expirationTime(entity.getExpiresAt().toInstant(java.time.ZoneOffset.UTC).toEpochMilli())
                 .build();
+    }
+    
+    private KeyPair loadOrCreateAccountKeyPair() throws Exception {
+        File accountKeyFile = new File(ACCOUNT_KEY_FILE);
+        if (accountKeyFile.exists()) {
+            try (FileReader fr = new FileReader(accountKeyFile)) {
+                return KeyPairUtils.readKeyPair(fr);
+            }
+        }
+
+        KeyPair keyPair = KeyPairUtils.createKeyPair(2048);
+        try (FileWriter fw = new FileWriter(accountKeyFile)) {
+            KeyPairUtils.writeKeyPair(keyPair, fw);
+        }
+        return keyPair;
+    }
+    
+    private KeyPair generateOrLoadDomainKeyPair() throws Exception {
+        File domainKeyFile = new File(DOMAIN_KEY_FILE);
+        if (domainKeyFile.exists()) {
+            try (FileReader fr = new FileReader(domainKeyFile)) {
+                return KeyPairUtils.readKeyPair(fr);
+            }
+        }
+
+        KeyPair keyPair = KeyPairUtils.createKeyPair(2048);
+        try (FileWriter fw = new FileWriter(domainKeyFile)) {
+            KeyPairUtils.writeKeyPair(keyPair, fw);
+        }
+        return keyPair;
     }
     
     // 其他辅助方法...

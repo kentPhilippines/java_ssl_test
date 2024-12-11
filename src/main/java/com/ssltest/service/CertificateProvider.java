@@ -1,5 +1,8 @@
 package com.ssltest.service;
 
+
+import com.ssltest.model.CertificateResult;
+
 public interface CertificateProvider {
     /**
      * 申请SSL证书
