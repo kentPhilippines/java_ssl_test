@@ -47,7 +47,6 @@ check_docker() {
         fi
     fi
 
-
     if ! command -v docker-compose &> /dev/null; then
         log_warn "Docker Compose未安装，尝试安装..."
         install_docker_compose
