@@ -107,14 +107,24 @@ install_docker() {
             sudo apt-get install -y docker-ce docker-ce-cli containerd.io
             ;;
             
-        *"CentOS"*|*"Red Hat"*|*"Fedora"*)
+        *"CentOS"*|*"Red Hat"*|*"Fedora"*|*"Alibaba"*)
             # 安装依赖
             sudo yum install -y yum-utils
             
-            # 添加Docker仓库
-            sudo yum-config-manager \
-                --add-repo \
-                https://download.docker.com/linux/centos/docker-ce.repo
+            # 对于阿里云Linux，使用阿里云的Docker源
+            if [[ "$OS" == *"Alibaba"* ]]; then
+                sudo yum-config-manager \
+                    --add-repo \
+                    http://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+                
+                # 替换仓库地址
+                sudo sed -i 's+download.docker.com+mirrors.aliyun.com/docker-ce+' /etc/yum.repos.d/docker-ce.repo
+            else
+                # 添加Docker仓库
+                sudo yum-config-manager \
+                    --add-repo \
+                    https://download.docker.com/linux/centos/docker-ce.repo
+            fi
             
             # 安装Docker
             sudo yum install -y docker-ce docker-ce-cli containerd.io
@@ -130,6 +140,22 @@ install_docker() {
     sudo systemctl start docker
     sudo systemctl enable docker
     
+    # 配置镜像加速
+    sudo mkdir -p /etc/docker
+    sudo tee /etc/docker/daemon.json <<-'EOF'
+    {
+      "registry-mirrors": [
+        "https://registry.cn-hangzhou.aliyuncs.com",
+        "https://mirror.ccs.tencentyun.com",
+        "https://hub-mirror.c.163.com"
+      ]
+    }
+    EOF
+    
+    # 重启Docker以应用配置
+    sudo systemctl daemon-reload
+    sudo systemctl restart docker
+    
     return 0
 }
 
@@ -137,8 +163,11 @@ install_docker() {
 install_docker_compose() {
     log_info "安装Docker Compose..."
     
+    # 使用阿里云镜像加速
+    COMPOSE_MIRROR="https://ghproxy.com/https://github.com"
     # 下载最新版Docker Compose
     COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep 'tag_name' | cut -d'"' -f4)
+    sudo curl -L "${COMPOSE_MIRROR}/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
     sudo curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
     
     # 添加执行权限
