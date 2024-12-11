@@ -388,6 +388,89 @@ cleanup_environment() {
     log_info "环境清理完成"
 }
 
+# 更新应用
+update_application() {
+    log_info "开始更新应用..."
+    
+    # 检查是否已安装
+    if [ ! -d "${INSTALL_DIR}/source" ]; then
+        log_error "应用未安装，请先运行 install 命令"
+        return 1
+    fi
+    
+    # 备份当前配置
+    if [ -f "${INSTALL_DIR}/conf/application.yml" ]; then
+        cp "${INSTALL_DIR}/conf/application.yml" "${BACKUP_DIR}/application.yml.$(date +%Y%m%d_%H%M%S)"
+    }
+    
+    # 备份当前版本
+    if [ -f "${INSTALL_DIR}/${APP_NAME}.jar" ]; then
+        backup_current_version "${BACKUP_DIR}/${APP_NAME}-$(date +%Y%m%d_%H%M%S).jar"
+    }
+    
+    # 更新代码
+    cd "${INSTALL_DIR}/source"
+    git fetch origin
+    
+    # 获取当前版本
+    local current_version=$(git rev-parse HEAD)
+    local remote_version=$(git rev-parse origin/${GIT_BRANCH})
+    
+    if [ "${current_version}" = "${remote_version}" ]; then
+        log_info "当前已是最新版本"
+        return 0
+    }
+    
+    # 显示更新内容
+    echo -e "${YELLOW}更新内容:${NC}"
+    git log --oneline ${current_version}..${remote_version}
+    echo
+    
+    # 确认更新
+    read -p "是否继续更新? (y/n) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log_info "更新已取消"
+        return 1
+    }
+    
+    # 更新代码
+    git pull origin ${GIT_BRANCH}
+    
+    # 构建应用
+    if ! build_application; then
+        log_error "构建失败，正在回滚..."
+        git reset --hard ${current_version}
+        return 1
+    fi
+    
+    # 停止服务
+    stop_application
+    
+    # 部署新版本
+    cp "target/${APP_NAME}.jar" "${INSTALL_DIR}/"
+    
+    # 更新版本信息
+    git rev-parse HEAD > ${VERSION_FILE}
+    
+    # 启动服务
+    start_application
+    
+    # 检查服务状态
+    if check_application_status; then
+        log_info "更新成功"
+        
+        # 创建回滚脚本
+        create_rollback_script ${current_version} "${BACKUP_DIR}/${APP_NAME}-${current_version}.jar"
+        log_info "已创建回滚脚本: ${ROLLBACK_SCRIPT}"
+    else
+        log_error "更新后服务启动失败，正在回滚..."
+        cp "${BACKUP_DIR}/${APP_NAME}-${current_version}.jar" "${INSTALL_DIR}/${APP_NAME}.jar"
+        start_application
+        return 1
+    fi
+}
+
 # 主函数
 main() {
     case "$1" in
