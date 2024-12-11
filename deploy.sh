@@ -5,14 +5,19 @@ APP_NAME="ssl-test-project"
 APP_USER="$(whoami)"
 APP_GROUP="$(id -gn)"
 INSTALL_DIR="/opt/ssl-java"
-LOG_DIR="${INSTALL_DIR}/logs"
+
+# 标准目录结构
+APP_JAR="${INSTALL_DIR}/${APP_NAME}.jar"
 BACKUP_DIR="${INSTALL_DIR}/backup"
+LOG_DIR="${INSTALL_DIR}/logs"
+CONF_DIR="${INSTALL_DIR}/conf"
 DATA_DIR="${INSTALL_DIR}/data"
-JDK_DIR="${INSTALL_DIR}/jdk"
-MAVEN_DIR="${INSTALL_DIR}/maven"
-JDK_VERSION="11"
-MAVEN_VERSION="3.9.6"
-ROLLBACK_SCRIPT="${INSTALL_DIR}/rollback.sh"
+SOURCE_DIR="${INSTALL_DIR}/source"
+
+# 工具目录
+TOOLS_DIR="${INSTALL_DIR}/tools"
+JDK_DIR="${TOOLS_DIR}/jdk"
+MAVEN_DIR="${TOOLS_DIR}/maven"
 
 # Git相关配置
 GIT_REPO="https://github.com/kentPhilippines/java_ssl_test.git"
@@ -82,10 +87,30 @@ full_cleanup() {
 # 创建基础目录
 create_base_dir() {
     log_info "创建基础目录..."
-    if [ ! -d "${INSTALL_DIR}" ]; then
-        sudo mkdir -p "${INSTALL_DIR}"
-        sudo chown -R ${APP_USER}:${APP_GROUP} "${INSTALL_DIR}"
-    fi
+    
+    # 创建标准目录结构
+    local DIRS=(
+        "${INSTALL_DIR}"
+        "${BACKUP_DIR}"
+        "${LOG_DIR}"
+        "${CONF_DIR}"
+        "${DATA_DIR}"
+        "${SOURCE_DIR}"
+        "${TOOLS_DIR}"
+    )
+    
+    for dir in "${DIRS[@]}"; do
+        if [ ! -d "$dir" ]; then
+            log_info "创建目录: $dir"
+            sudo mkdir -p "$dir"
+            sudo chown ${APP_USER}:${APP_GROUP} "$dir"
+            sudo chmod 755 "$dir"
+        fi
+    done
+    
+    # 特殊权限目录
+    sudo chmod 700 "${BACKUP_DIR}"  # 备份目录需要更严格的权限
+    sudo chmod 777 "${LOG_DIR}"     # 日志目录需要写入权限
 }
 
 # 检查系统要求
@@ -267,8 +292,8 @@ setup_environment() {
     log_info "配置环境..."
     
     # 创建配置文件
-    mkdir -p "${INSTALL_DIR}/conf"
-    cat > "${INSTALL_DIR}/conf/application.yml" << EOF
+    mkdir -p "${CONF_DIR}"
+    cat > "${CONF_DIR}/application.yml" << EOF
 server:
   port: ${APP_PORT}
   http:
@@ -285,26 +310,37 @@ spring:
   profiles:
     active: prod
   datasource:
-    url: jdbc:h2:file:${INSTALL_DIR}/data/db/ssl
+    url: jdbc:h2:file:${DATA_DIR}/db/ssl
     username: sa
     password: password
     driver-class-name: org.h2.Driver
 
 logging:
   file:
-    path: ${INSTALL_DIR}/logs
+    path: ${LOG_DIR}
   level:
     root: INFO
     com.ssltest: DEBUG
 
 app:
   data:
-    dir: ${INSTALL_DIR}/data
+    dir: ${DATA_DIR}
   ssl:
-    dir: ${INSTALL_DIR}/ssl
+    dir: ${DATA_DIR}/ssl
   acme:
-    storage-dir: ${INSTALL_DIR}/data/acme
+    storage-dir: ${DATA_DIR}/acme
 EOF
+
+    # 创建数据库目录
+    mkdir -p "${DATA_DIR}/db"
+    mkdir -p "${DATA_DIR}/ssl"
+    mkdir -p "${DATA_DIR}/acme"
+    
+    # 设置数据目录权限
+    chmod 700 "${DATA_DIR}/db"    # 数据库目录需要严格权限
+    chmod 700 "${DATA_DIR}/ssl"   # SSL证书目录需要严格权限
+    chmod 700 "${DATA_DIR}/acme"  # ACME目录需要严格权限
+    chown -R ${APP_USER}:${APP_GROUP} "${DATA_DIR}"
 }
 
 # 创建系统服务
@@ -396,34 +432,59 @@ build_application() {
     log_info "构建应用..."
     
     local SOURCE_DIR="${INSTALL_DIR}/source"
+    local TARGET_DIR="${SOURCE_DIR}/target"
+    local BUILD_LOG="${INSTALL_DIR}/build.log"
+    local MAVEN_LOG="${INSTALL_DIR}/maven.log"
+    local JAR_NAME="${APP_NAME}-1.0-SNAPSHOT.jar"
+    local FINAL_JAR="${INSTALL_DIR}/${APP_NAME}.jar"
+    
+    # 备份当前运行的JAR
+    if [ -f "${FINAL_JAR}" ]; then
+        log_info "备份当前JAR文件..."
+        cp "${FINAL_JAR}" "${BACKUP_DIR}/${APP_NAME}-$(date +%Y%m%d%H%M%S).jar"
+    fi
+    
+    # 进入源码目录构建
     cd "${SOURCE_DIR}" || {
         log_error "无法进入源码目录"
         return 1
     }
     
-    # 清理旧的构建文件
-    log_cmd "rm -rf target/"
-    rm -rf target/
-    
-    # 设置Maven环境
-    export MAVEN_OPTS="-Xmx512m"
-    export MAVEN_HOME="${MAVEN_DIR}"
-    export PATH="${MAVEN_DIR}/bin:${PATH}"
-    
-    # Maven构建命令
-    local BUILD_CMD="${MAVEN_CMD} clean package -DskipTests"
-    
-    # 执行构建
-    log_info "开始构建: ${BUILD_CMD}"
-    if ! ${BUILD_CMD} > build.log 2>&1; then
+    # Maven构建
+    log_info "开始构建..."
+    if ! ${MAVEN_CMD} clean package -DskipTests > "${BUILD_LOG}" 2>&1; then
         log_error "构建失败，查看日志:"
-        cat build.log
+        cat "${BUILD_LOG}"
         return 1
     fi
     
-    # 显示构建日志
-    log_info "构建日志:"
-    cat build.log
+    # 检查构建产��
+    if [ ! -f "${TARGET_DIR}/${JAR_NAME}" ]; then
+        log_error "构建产物不存在: ${TARGET_DIR}/${JAR_NAME}"
+        log_error "目录内容:"
+        ls -l "${TARGET_DIR}"
+        return 1
+    fi
+    
+    # 复制到安装目录
+    log_cmd "cp ${TARGET_DIR}/${JAR_NAME} ${FINAL_JAR}"
+    if ! cp "${TARGET_DIR}/${JAR_NAME}" "${FINAL_JAR}"; then
+        log_error "复制JAR文件失败"
+        return 1
+    fi
+    
+    # 验证安装目录的JAR
+    if ! jar tvf "${FINAL_JAR}" > /dev/null 2>&1; then
+        log_error "JAR文件验证失败"
+        return 1
+    fi
+    
+    # 清理构建目录
+    cd "${INSTALL_DIR}"
+    rm -rf "${SOURCE_DIR}/target"
+    
+    log_info "构建完成: ${FINAL_JAR}"
+    ls -l "${FINAL_JAR}"
     
     return 0
 }
@@ -644,91 +705,46 @@ check_command() {
 start_application() {
     log_info "启动应用..."
     
-    # 检查必要文件和目录
-    if [ ! -f "${INSTALL_DIR}/${APP_NAME}.jar" ]; then
-        log_error "应用jar包不存在: ${INSTALL_DIR}/${APP_NAME}.jar"
-        return 1
-    fi
+    # 检查必要的目录
+    local REQUIRED_DIRS=(
+        "${DATA_DIR}/db"
+        "${DATA_DIR}/ssl"
+        "${DATA_DIR}/acme"
+        "${LOG_DIR}"
+    )
     
-    if [ ! -f "${INSTALL_DIR}/conf/application.yml" ]; then
-        log_error "配置文件不存在: ${INSTALL_DIR}/conf/application.yml"
-        return 1
-    fi
-    
-    # 检查端口占用情况
-    log_cmd "netstat -tlpn | grep ${APP_PORT}"
-    if netstat -tlpn | grep -q ":${APP_PORT}.*LISTEN"; then
-        log_error "端口 ${APP_PORT} 已被占用"
-        netstat -tlpn | grep ":${APP_PORT}"
-        return 1
-    fi
-    
-    # 启动前检查服务状态并停止
-    if systemctl is-active --quiet ${APP_NAME}; then
-        log_info "停止已运行的服务..."
-        stop_application
-    fi
-    
-    log_cmd "sudo systemctl start ${APP_NAME}"
-    sudo systemctl start ${APP_NAME}
-    
-    # 等待服务启动
-    local timeout=60  # 增加超时时间
-    log_info "等待服务启动 (${timeout}秒超时)..."
-    while [ $timeout -gt 0 ]; do
-        # 检查服务状态
-        if systemctl is-active --quiet ${APP_NAME}; then
-            # 检查进程是否存在
-            local pid=$(systemctl show -p MainPID ${APP_NAME} | cut -d= -f2)
-            if [ -n "$pid" ] && [ "$pid" != "0" ]; then
-                log_info "应用进程ID: $pid"
-            else
-                log_error "应用进程不存在"
-                return 1
-            fi
-            
-            # 检查日志中的错误
-            if [ -f "${INSTALL_DIR}/logs/application.log" ]; then
-                log_cmd "tail -n 50 ${INSTALL_DIR}/logs/application.log"
-                if grep -i "error\|exception" "${INSTALL_DIR}/logs/application.log" > /dev/null; then
-                    log_error "应用日志中发现错误:"
-                    grep -i "error\|exception" "${INSTALL_DIR}/logs/application.log" | tail -n 5
-                fi
-            fi
-            
-            # 等待端口监听（给予更多时间）
-            local port_timeout=30
-            while [ $port_timeout -gt 0 ]; do
-                if netstat -tlpn | grep -q ":${APP_PORT}.*LISTEN"; then
-                    log_info "端口 ${APP_PORT} 已正常监听"
-                    log_info "应用启动成功"
-                    return 0
-                fi
-                sleep 1
-                port_timeout=$((port_timeout-1))
-                echo -n "."
-            done
-            
-            log_error "端口未正常监听，但服务已启动"
-            log_info "当前监听的端口:"
-            netstat -tlpn | grep "LISTEN"
+    for dir in "${REQUIRED_DIRS[@]}"; do
+        if [ ! -d "$dir" ]; then
+            log_error "必要目录不存在: $dir"
             return 1
         fi
         
+        # 检查目录权限
+        if [ ! -w "$dir" ]; then
+            log_error "目录无写入权限: $dir"
+            return 1
+        fi
+    done
+    
+    if systemctl is-active --quiet ${APP_NAME}; then
+        log_info "应用已在运行"
+        return 0
+    fi
+    
+    sudo systemctl start ${APP_NAME}
+    
+    # 等待服务启动
+    local timeout=30
+    while [ $timeout -gt 0 ]; do
+        if systemctl is-active --quiet ${APP_NAME}; then
+            log_info "应用已启动"
+            return 0
+        fi
         sleep 1
-        timeout=$((timeout-1))
-        echo -n "."
+        ((timeout--))
     done
     
     log_error "应用启动超时"
-    log_error "系统日志:"
-    journalctl -u ${APP_NAME} --no-pager | tail -n 50
-    
-    log_error "应用日志:"
-    if [ -f "${INSTALL_DIR}/logs/application.log" ]; then
-        tail -n 50 "${INSTALL_DIR}/logs/application.log"
-    fi
-    
     return 1
 }
 
@@ -741,13 +757,34 @@ stop_application() {
 
 # 检查应用状态
 check_application_status() {
-    if sudo systemctl is-active ${APP_NAME} &> /dev/null; then
-        log_info "应用运行正常"
-        return 0
-    else
-        log_error "应用未运行"
+    log_info "检查应用状态..."
+    
+    # 检查进程
+    if ! systemctl is-active --quiet ${APP_NAME}; then
+        log_error "服务未运行"
         return 1
     fi
+    
+    # 检查JAR文件
+    if [ ! -f "${INSTALL_DIR}/${APP_NAME}.jar" ]; then
+        log_error "JAR文件不存在"
+        return 1
+    fi
+    
+    # 检查日志文件
+    if [ ! -f "${INSTALL_DIR}/logs/application.log" ]; then
+        log_error "日志文件不存在"
+        return 1
+    fi
+    
+    # 检查端口
+    if ! netstat -tlpn | grep -q ":${APP_PORT}.*java"; then
+        log_error "应用端口 ${APP_PORT} 未监听"
+        return 1
+    fi
+    
+    log_info "应用运行正常"
+    return 0
 }
 
 # 备份当前版本
@@ -818,7 +855,7 @@ version_info() {
             git log --oneline -n 5
         fi
     else
-        log_error "未找到版本息"
+        log_error "未找到版本信息"
         return 1
     fi
 }
@@ -859,7 +896,7 @@ cleanup_environment() {
     echo "4. 端口配置"
     echo
     
-    read -p "确认清理环? (输入 'YES' 确认) " -r
+    read -p "确认清理环境? (输入 'YES' 确认) " -r
     echo
     if [[ ! $REPLY == "YES" ]]; then
         log_info "操作已取消"
@@ -878,8 +915,22 @@ cleanup_environment() {
 update_application() {
     log_info "开始更新应用..."
     
+    # 检查主目录
+    if [ ! -d "${INSTALL_DIR}" ]; then
+        log_error "安装目录不存在: ${INSTALL_DIR}"
+        return 1
+    fi
+    
     log_cmd "cd ${INSTALL_DIR}/source"
     cd "${INSTALL_DIR}/source"
+    
+    # 清理旧的构建文件
+    log_cmd "rm -rf target/"
+    rm -rf target/
+    
+    # 清理旧的构建日志
+    rm -f "${INSTALL_DIR}"/{build.log,maven.log}
+    
     log_cmd "git fetch origin"
     git fetch origin
     
@@ -905,11 +956,12 @@ update_application() {
         return 1
     fi
     
-    # 停止服务
-    stop_application
-    
-    # 部署新版本
-    cp "target/${APP_NAME}.jar" "${INSTALL_DIR}/"
+    # 检查构建结果
+    if ! check_build_result; then
+        log_error "构建检查失败，正在回滚..."
+        git reset --hard ${current_version}
+        return 1
+    fi
     
     # 更新版本信息
     git rev-parse HEAD > ${VERSION_FILE}
@@ -943,6 +995,35 @@ git_clone() {
     fi
     
     git clone -b ${GIT_BRANCH} ${GIT_REPO} "${INSTALL_DIR}/source"
+}
+
+# 更新应用时的构建检查
+check_build_result() {
+    local FINAL_JAR="${INSTALL_DIR}/${APP_NAME}.jar"
+    local BUILD_LOG="${INSTALL_DIR}/last-build.log"
+    local MAVEN_LOG="${INSTALL_DIR}/last-maven.log"
+    
+    # 检查构建日志中的错误
+    if [ -f "${MAVEN_LOG}" ]; then
+        if grep -i "BUILD FAILURE" "${MAVEN_LOG}" > /dev/null; then
+            log_error "Maven构建失败，详见日志: ${MAVEN_LOG}"
+            return 1
+        fi
+    fi
+    
+    # 检查最终JAR文件
+    if [ ! -f "${FINAL_JAR}" ]; then
+        log_error "构建后JAR文件不存在"
+        return 1
+    fi
+    
+    # 验证JAR文件
+    if ! jar tvf "${FINAL_JAR}" > /dev/null 2>&1; then
+        log_error "JAR文件验证失败"
+        return 1
+    fi
+    
+    return 0
 }
 
 # 主函数
