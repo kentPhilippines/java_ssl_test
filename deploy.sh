@@ -6,18 +6,24 @@ APP_USER="$(whoami)"
 APP_GROUP="$(id -gn)"
 INSTALL_DIR="/opt/ssl-java"
 
+# JDK配置
+JDK_VERSION="17"
+JDK_PACKAGE_DEBIAN="openjdk-${JDK_VERSION}-jdk"
+JDK_PACKAGE_REDHAT="java-${JDK_VERSION}-openjdk"
+
 # 标准目录结构
-APP_JAR="${INSTALL_DIR}/${APP_NAME}.jar"
-BACKUP_DIR="${INSTALL_DIR}/backup"
-LOG_DIR="${INSTALL_DIR}/logs"
-CONF_DIR="${INSTALL_DIR}/conf"
-DATA_DIR="${INSTALL_DIR}/data"
-SOURCE_DIR="${INSTALL_DIR}/source"
+APP_JAR="${INSTALL_DIR}/${APP_NAME}.jar"  # 当前运行的JAR
+BACKUP_DIR="${INSTALL_DIR}/backup"        # 备份目录
+LOG_DIR="${INSTALL_DIR}/logs"            # 日志目录
+CONF_DIR="${INSTALL_DIR}/conf"           # 配置目录
+DATA_DIR="${INSTALL_DIR}/data"           # 数据目录
+SOURCE_DIR="${INSTALL_DIR}/source"       # 源码目录
 
 # 工具目录
-TOOLS_DIR="${INSTALL_DIR}/tools"
-JDK_DIR="${TOOLS_DIR}/jdk"
-MAVEN_DIR="${TOOLS_DIR}/maven"
+TOOLS_DIR="${INSTALL_DIR}/tools"         # 工具目录
+JDK_DIR="${TOOLS_DIR}/jdk"              # JDK安装目录
+MAVEN_DIR="${TOOLS_DIR}/maven"          # Maven安装目录
+MAVEN_REPO="${INSTALL_DIR}/maven/repo"    # Maven仓库目录
 
 # Git相关配置
 GIT_REPO="https://github.com/kentPhilippines/java_ssl_test.git"
@@ -25,7 +31,7 @@ GIT_BRANCH="main"
 VERSION_FILE="${INSTALL_DIR}/VERSION"
 
 # Maven配置
-MAVEN_OPTS="-Xmx512m -Dmaven.repo.local=${INSTALL_DIR}/maven/repository"
+MAVEN_OPTS="-Xmx512m -Dmaven.repo.local=${MAVEN_REPO}"
 
 # 应用配置
 APP_OPTS="-Xmx1G -Xms512m"
@@ -90,27 +96,65 @@ create_base_dir() {
     
     # 创建标准目录结构
     local DIRS=(
-        "${INSTALL_DIR}"
-        "${BACKUP_DIR}"
-        "${LOG_DIR}"
-        "${CONF_DIR}"
-        "${DATA_DIR}"
-        "${SOURCE_DIR}"
-        "${TOOLS_DIR}"
+        "${INSTALL_DIR}"                    # /opt/ssl-java
+        "${TOOLS_DIR}"                      # /opt/ssl-java/tools
+        "${TOOLS_DIR}/jdk"                  # /opt/ssl-java/tools/jdk
+        "${TOOLS_DIR}/maven"                # /opt/ssl-java/tools/maven
+        "${MAVEN_REPO}"                     # /opt/ssl-java/maven/repo
+        "${BACKUP_DIR}"                     # /opt/ssl-java/backup
+        "${LOG_DIR}"                        # /opt/ssl-java/logs
+        "${CONF_DIR}"                       # /opt/ssl-java/conf
+        "${DATA_DIR}"                       # /opt/ssl-java/data
+        "${DATA_DIR}/db"                    # /opt/ssl-java/data/db
+        "${DATA_DIR}/ssl"                   # /opt/ssl-java/data/ssl
+        "${DATA_DIR}/ssl/certs"             # /opt/ssl-java/data/ssl/certs
+        "${DATA_DIR}/ssl/keys"              # /opt/ssl-java/data/ssl/keys
+        "${DATA_DIR}/acme"                  # /opt/ssl-java/data/acme
+        "${SOURCE_DIR}"                     # /opt/ssl-java/source
+        "${INSTALL_DIR}/.m2"                # /opt/ssl-java/.m2
+        "${INSTALL_DIR}/maven"              # /opt/ssl-java/maven
     )
     
     for dir in "${DIRS[@]}"; do
         if [ ! -d "$dir" ]; then
             log_info "创建目录: $dir"
             sudo mkdir -p "$dir"
-            sudo chown ${APP_USER}:${APP_GROUP} "$dir"
-            sudo chmod 755 "$dir"
         fi
     done
     
-    # 特殊权限目录
-    sudo chmod 700 "${BACKUP_DIR}"  # 备份目录需要更严格的权限
-    sudo chmod 777 "${LOG_DIR}"     # 日志目录需要写入权限
+    # 设置目录权限和所有权
+    local DIR_PERMISSIONS=(
+        "${INSTALL_DIR}:755"
+        "${TOOLS_DIR}:755"
+        "${SOURCE_DIR}:755"
+        "${CONF_DIR}:755"
+        "${BACKUP_DIR}:700"
+        "${LOG_DIR}:777"
+        "${DATA_DIR}:700"
+        "${DATA_DIR}/db:700"
+        "${DATA_DIR}/ssl:700"
+        "${DATA_DIR}/ssl/certs:700"
+        "${DATA_DIR}/ssl/keys:700"
+        "${DATA_DIR}/acme:700"
+        "${INSTALL_DIR}/maven:755"
+        "${MAVEN_REPO}:755"
+        "${INSTALL_DIR}/.m2:755"
+    )
+    
+    for entry in "${DIR_PERMISSIONS[@]}"; do
+        local dir="${entry%%:*}"
+        local perm="${entry##*:}"
+        
+        sudo chmod "$perm" "$dir"
+        sudo chown ${APP_USER}:${APP_GROUP} "$dir"
+        
+        # 验证权限设置
+        local actual_perm=$(stat -c %a "$dir")
+        if [ "$actual_perm" != "$perm" ]; then
+            log_error "目录权限设置失败: $dir (期望:$perm, 实际:$actual_perm)"
+            return 1
+        fi
+    done
 }
 
 # 检查系统要求
@@ -148,142 +192,112 @@ check_system_requirements() {
 install_dependencies() {
     log_info "安装依赖..."
     
-    # 确保安装目录存在
-    sudo mkdir -p ${INSTALL_DIR}/{jdk,maven}
+    # 确保工具目录存在
+    sudo mkdir -p ${TOOLS_DIR}/{jdk,maven}
     sudo chown -R ${APP_USER}:${APP_GROUP} ${INSTALL_DIR}
     
-    # 检查curl
-    if ! command -v curl &> /dev/null; then
-        log_error "curl未安装，正在安装..."
-        if [ -f /etc/debian_version ]; then
-            log_cmd "sudo apt-get install -y curl"
-            sudo apt-get install -y curl
-        elif [ -f /etc/redhat-release ]; then
-            log_cmd "sudo yum install -y curl"
-            sudo yum install -y curl
-        fi
-    fi
+    # 设置环境变量
+    export JAVA_HOME="${JDK_DIR}"
+    export PATH="${JAVA_HOME}/bin:$PATH"
+    export M2_HOME="${MAVEN_DIR}"
+    export PATH="${M2_HOME}/bin:$PATH"
+    export MAVEN_OPTS="-Xmx512m"
     
-    # 使用包管理器安装JDK
-    log_info "安装JDK..."
+    # 安装基础工具
     if [ -f /etc/debian_version ]; then
-        log_cmd "sudo apt-get update"
+        log_info "安装基础工具 (Debian/Ubuntu)..."
         sudo apt-get update
-        log_cmd "sudo apt-get install -y openjdk-${JDK_VERSION}-jdk"
-        sudo apt-get install -y openjdk-${JDK_VERSION}-jdk
-        JDK_PATH="/usr/lib/jvm/java-${JDK_VERSION}-openjdk-amd64"
-    elif [ -f /etc/redhat-release ]; then
-        # 在RedHat系统中查找JDK路径
-        for possible_path in \
-            "/usr/lib/jvm/java-${JDK_VERSION}-openjdk" \
-            "/usr/lib/jvm/java-${JDK_VERSION}" \
-            "/usr/lib/jvm/java-${JDK_VERSION}-openjdk-${JDK_VERSION}.*" \
-            "/usr/java/jdk-${JDK_VERSION}"
-        do
-            if [ -d "${possible_path}" ]; then
-                JDK_PATH="${possible_path}"
-                break
-            fi
-        done
+        sudo apt-get install -y curl wget unzip git
         
-        # 如果还是找不到，尝试使用find命令
-        if [ -z "${JDK_PATH}" ]; then
-            JDK_PATH=$(find /usr/lib/jvm/ -maxdepth 1 -type d -name "*openjdk-${JDK_VERSION}*" | head -n 1)
+        # 下载JDK到工具目录
+        log_info "下载JDK到工具目录..."
+        sudo apt-get install -y ${JDK_PACKAGE_DEBIAN}
+        sudo cp -r /usr/lib/jvm/java-${JDK_VERSION}-openjdk-amd64/* "${JDK_DIR}/"
+        
+    elif [ -f /etc/redhat-release ]; then
+        log_info "安装基础工具 (RHEL/CentOS)..."
+        sudo yum install -y curl wget unzip git
+        
+        # 下载JDK到工具目录
+        log_info "下载JDK到工具目录..."
+        sudo yum install -y java-${JDK_VERSION}-openjdk java-${JDK_VERSION}-openjdk-devel
+        
+        # 复制JDK文件到工具目录
+        JDK_PATH="/usr/lib/jvm/java-${JDK_VERSION}-openjdk"
+        if [ -d "${JDK_PATH}" ]; then
+            sudo cp -r ${JDK_PATH}/* "${JDK_DIR}/"
+        else
+            log_error "找不到JDK安装路径: ${JDK_PATH}"
+            return 1
         fi
     fi
     
-    # 验证JDK路径
-    if [ ! -d "${JDK_PATH}" ]; then
-        log_error "JDK路径不存在: ${JDK_PATH}"
+    # 下载并安装Maven
+    log_info "下载并安装Maven..."
+    rm -rf "${MAVEN_DIR}"/*  # 清理现有Maven目录
+    
+    # 下载Maven
+    MAVEN_VERSION="3.9.6"
+    MAVEN_URL="https://dlcdn.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz"
+    log_info "从 ${MAVEN_URL} 下载Maven..."
+    
+    if ! wget -q "${MAVEN_URL}" -O /tmp/maven.tar.gz; then
+        log_error "Maven下载失败"
         return 1
     fi
     
-    log_info "使用JDK路径: ${JDK_PATH}"
+    # 解压Maven
+    log_info "解压Maven到 ${MAVEN_DIR}..."
+    mkdir -p "${MAVEN_DIR}"
+    tar -xzf /tmp/maven.tar.gz -C "${TOOLS_DIR}"
+    cp -r "${TOOLS_DIR}/apache-maven-${MAVEN_VERSION}"/* "${MAVEN_DIR}/"
+    rm -rf "${TOOLS_DIR}/apache-maven-${MAVEN_VERSION}"
+    rm -f /tmp/maven.tar.gz
     
-    # 确保目标目录为空
-    if [ -d "${JDK_DIR}" ]; then
-        log_cmd "rm -rf ${JDK_DIR}"
-        rm -rf "${JDK_DIR}"
-    fi
+    # 设置权限
+    sudo chmod -R 755 "${JDK_DIR}"
+    sudo chmod -R 755 "${MAVEN_DIR}"
+    sudo chown -R ${APP_USER}:${APP_GROUP} "${JDK_DIR}"
+    sudo chown -R ${APP_USER}:${APP_GROUP} "${MAVEN_DIR}"
     
-    # 创建软链接
-    log_cmd "sudo ln -sf ${JDK_PATH} ${JDK_DIR}"
-    sudo ln -sf ${JDK_PATH} ${JDK_DIR}
+    # 配置Maven
+    setup_maven_config
     
-    # 验证Java安装（先检查文件是否存在）
-    if [ ! -x "${JDK_DIR}/bin/java" ]; then
-        log_error "Java可执行文件不存在或无执行权限: ${JDK_DIR}/bin/java"
-        return 1
-    fi
-    
-    log_cmd "${JDK_DIR}/bin/java -version"
+    # 验证Java安装
+    log_info "验证Java安装..."
+    log_info "JAVA_HOME=${JAVA_HOME}"
+    log_info "PATH=${PATH}"
     if ! "${JDK_DIR}/bin/java" -version; then
-        log_error "JDK安装失败"
+        log_error "Java验证失败"
         return 1
     fi
+    
+    # 验证Maven安装
+    log_info "验证Maven安装..."
+    log_info "M2_HOME=${M2_HOME}"
+    log_info "MAVEN_OPTS=${MAVEN_OPTS}"
+    if [ ! -x "${MAVEN_DIR}/bin/mvn" ]; then
+        log_error "Maven可执行文件不存在或无执行权限"
+        return 1
+    fi
+    
+    # 验证Maven版本
+    log_info "验证Maven版本..."
+    if ! "${MAVEN_DIR}/bin/mvn" -version; then
+        log_error "Maven验证失败"
+        log_error "JAVA_HOME=${JAVA_HOME}"
+        log_error "M2_HOME=${M2_HOME}"
+        log_error "PATH=${PATH}"
+        return 1
+    fi
+    
+    log_info "JDK和Maven安装完成"
     
     # 配置环境变量
     export JAVA_HOME=${JDK_DIR}
     export MAVEN_HOME=${MAVEN_DIR}
     export PATH=${JAVA_HOME}/bin:${MAVEN_HOME}/bin:$PATH
     
-    # 创建永久环境变量配置
-    cat > /tmp/java_env.sh << EOF
-export JAVA_HOME=${JDK_DIR}
-export MAVEN_HOME=${MAVEN_DIR}
-export PATH=\${JAVA_HOME}/bin:\${MAVEN_HOME}/bin:\$PATH
-EOF
-    
-    sudo mv /tmp/java_env.sh /etc/profile.d/
-    sudo chmod 644 /etc/profile.d/java_env.sh
-    
-    # 立即应用环境变量
-    source /etc/profile.d/java_env.sh
-    
-    # 验证安装
-    log_cmd "${JAVA_CMD} -version"
-    if ! ${JAVA_CMD} -version; then
-        log_error "Java 验证失败"
-        log_error "JAVA_HOME: ${JAVA_HOME}"
-        log_error "PATH: ${PATH}"
-        return 1
-    fi
-    
-    # 下载并安装Maven
-    log_info "下载Maven..."
-    log_cmd "curl -L \"https://dlcdn.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz\" -o /tmp/maven.tar.gz"
-    curl -L "https://dlcdn.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" -o /tmp/maven.tar.gz
-    log_cmd "tar -xzf /tmp/maven.tar.gz -C ${MAVEN_DIR} --strip-components=1"
-    tar -xzf /tmp/maven.tar.gz -C ${MAVEN_DIR} --strip-components=1
-    log_cmd "rm /tmp/maven.tar.gz"
-    rm /tmp/maven.tar.gz
-    
-    # 配置环境变量
-    export JAVA_HOME=${JDK_PATH}
-    export MAVEN_HOME=${MAVEN_DIR}
-    export PATH=${JAVA_HOME}/bin:${MAVEN_HOME}/bin:$PATH
-    
-    # 验证安装
-    if ! java -version; then
-        log_error "Java 验证失败"
-        return 1
-    fi
-    
-    if ! ${MAVEN_CMD} -version; then
-        log_error "Maven 验证失败"
-        return 1
-    fi
-    
-    if ! command -v git &> /dev/null; then
-        log_error "Git未安装，正在安装..."
-        if [ -f /etc/debian_version ]; then
-            sudo apt-get install -y git
-        elif [ -f /etc/redhat-release ]; then
-            sudo yum install -y git
-        fi
-    fi
-    
-    git --version
     return 0
 }
 
@@ -300,7 +314,7 @@ server:
     port: ${HTTP_PORT}
   ssl:
     enabled: true
-    key-store: ${INSTALL_DIR}/ssl/keystore.p12
+    key-store: ${DATA_DIR}/ssl/keystore.p12
     key-store-password: changeit
     key-store-type: PKCS12
 
@@ -322,23 +336,36 @@ logging:
     root: INFO
     com.ssltest: DEBUG
 
-app:
-  data:
-    dir: ${DATA_DIR}
-  ssl:
-    dir: ${DATA_DIR}/ssl
-  acme:
-    storage-dir: ${DATA_DIR}/acme
+acme:
+  server:
+    url: https://acme-v02.api.letsencrypt.org/directory
+  account:
+    email: admin@example.com
+  security:
+    key-store-type: PKCS12
+    key-store-password: changeit
+    allow-http: true
+    key-store: ${DATA_DIR}/ssl/keystore.p12
+  storage:
+    path: ${DATA_DIR}/acme
 EOF
 
+    # 设置配置文件权限
+    chmod 644 "${CONF_DIR}/application.yml"
+    chown ${APP_USER}:${APP_GROUP} "${CONF_DIR}/application.yml"
+    
     # 创建数据库目录
     mkdir -p "${DATA_DIR}/db"
     mkdir -p "${DATA_DIR}/ssl"
     mkdir -p "${DATA_DIR}/acme"
+    mkdir -p "${DATA_DIR}/ssl/certs"
+    mkdir -p "${DATA_DIR}/ssl/keys"
     
     # 设置数据目录权限
     chmod 700 "${DATA_DIR}/db"    # 数据库目录需要严格权限
     chmod 700 "${DATA_DIR}/ssl"   # SSL证书目录需要严格权限
+    chmod 700 "${DATA_DIR}/ssl/certs"  # 证书目录需要严格权限
+    chmod 700 "${DATA_DIR}/ssl/keys"   # 私钥目录需要严格权限
     chmod 700 "${DATA_DIR}/acme"  # ACME目录需要严格权限
     chown -R ${APP_USER}:${APP_GROUP} "${DATA_DIR}"
 }
@@ -429,13 +456,11 @@ EOF
 
 # 构建应用
 build_application() {
-    log_info "构建应用..."
+    log_info "开始构建..."
     
     local SOURCE_DIR="${INSTALL_DIR}/source"
     local TARGET_DIR="${SOURCE_DIR}/target"
-    local BUILD_LOG="${INSTALL_DIR}/build.log"
-    local MAVEN_LOG="${INSTALL_DIR}/maven.log"
-    local JAR_NAME="${APP_NAME}-1.0-SNAPSHOT.jar"
+    local BUILD_JAR="${TARGET_DIR}/${APP_NAME}.jar"
     local FINAL_JAR="${INSTALL_DIR}/${APP_NAME}.jar"
     
     # 备份当前运行的JAR
@@ -444,48 +469,38 @@ build_application() {
         cp "${FINAL_JAR}" "${BACKUP_DIR}/${APP_NAME}-$(date +%Y%m%d%H%M%S).jar"
     fi
     
-    # 进入源码目录构建
-    cd "${SOURCE_DIR}" || {
-        log_error "无法进入源码目录"
-        return 1
-    }
+    # 进入源码目录
+    cd "${SOURCE_DIR}"
     
-    # Maven构建
-    log_info "开始构建..."
-    if ! ${MAVEN_CMD} clean package -DskipTests > "${BUILD_LOG}" 2>&1; then
-        log_error "构建失败，查看日志:"
-        cat "${BUILD_LOG}"
+    # 设置Maven环境变量
+    export MAVEN_OPTS="-Xmx512m"
+    export MAVEN_HOME="${MAVEN_DIR}"
+    export PATH="${MAVEN_HOME}/bin:$PATH"
+    
+    # 执行构建
+    log_info "执行Maven构建..."
+    if ! "${MAVEN_DIR}/bin/mvn" clean package -DskipTests; then
+        log_error "Maven构建失败"
         return 1
     fi
     
-    # 检查构建产��
-    if [ ! -f "${TARGET_DIR}/${JAR_NAME}" ]; then
-        log_error "构建产物不存在: ${TARGET_DIR}/${JAR_NAME}"
+    # 检查构建产物
+    if [ ! -f "${BUILD_JAR}" ]; then
+        log_error "构建产物不存在: ${BUILD_JAR}"
         log_error "目录内容:"
-        ls -l "${TARGET_DIR}"
+        ls -la "${TARGET_DIR}"
         return 1
     fi
     
-    # 复制到安装目录
-    log_cmd "cp ${TARGET_DIR}/${JAR_NAME} ${FINAL_JAR}"
-    if ! cp "${TARGET_DIR}/${JAR_NAME}" "${FINAL_JAR}"; then
-        log_error "复制JAR文件失败"
-        return 1
-    fi
+    # 复制构建产物
+    log_info "复制构建产物..."
+    cp "${BUILD_JAR}" "${FINAL_JAR}"
     
-    # 验证安装目录的JAR
-    if ! jar tvf "${FINAL_JAR}" > /dev/null 2>&1; then
-        log_error "JAR文件验证失败"
-        return 1
-    fi
+    # 设置权限
+    chmod 644 "${FINAL_JAR}"
+    chown ${APP_USER}:${APP_GROUP} "${FINAL_JAR}"
     
-    # 清理构建目录
-    cd "${INSTALL_DIR}"
-    rm -rf "${SOURCE_DIR}/target"
-    
-    log_info "构建完成: ${FINAL_JAR}"
-    ls -l "${FINAL_JAR}"
-    
+    log_info "构建完成"
     return 0
 }
 
@@ -537,76 +552,88 @@ EOF
     sudo mv /tmp/${APP_NAME}-logrotate /etc/logrotate.d/${APP_NAME}
 }
 
+# 克隆代码前添加检查
+git_clone() {
+    log_info "克隆代码..."
+    
+    # 检查目标目录
+    if [ -d "${INSTALL_DIR}/source" ]; then
+        log_info "清理已存在的源码目录..."
+        rm -rf "${INSTALL_DIR}/source"
+    fi
+    
+    if ! git clone -b ${GIT_BRANCH} ${GIT_REPO} "${INSTALL_DIR}/source"; then
+        log_error "代码克隆失败"
+        return 1
+    fi
+    
+    # 创建版本文件
+    cd "${INSTALL_DIR}/source"
+    git rev-parse HEAD > "${VERSION_FILE}"
+    
+    # 设置版本文件权限
+    chmod 644 "${VERSION_FILE}"
+    chown ${APP_USER}:${APP_GROUP} "${VERSION_FILE}"
+    
+    log_info "代码克隆完成，当前版本: $(cat ${VERSION_FILE})"
+}
+
 # 安装应用
 install_application() {
     log_info "开始安装应用..."
     
-    # 1. 检查并创建必要目录
-    local DIRS=(
-        "${INSTALL_DIR}"
-        "${INSTALL_DIR}/source"
-        "${INSTALL_DIR}/maven"
-        "${INSTALL_DIR}/jdk"
-        "${INSTALL_DIR}/logs"
-        "${INSTALL_DIR}/conf"
-        "${INSTALL_DIR}/data"
-    )
-    
-    for dir in "${DIRS[@]}"; do
-        if [ ! -d "$dir" ]; then
-            log_info "创建目录: $dir"
-            mkdir -p "$dir"
-            chown ${APP_USER}:${APP_GROUP} "$dir"
-        fi
-    done
-    
-    # 2. 检查Java环境
-    if ! check_java_environment; then
-        log_error "Java环境检查失败"
+    # 检查系统要求
+    if ! check_system_requirements; then
+        log_error "系统要求检查失败"
         return 1
     fi
     
-    # 3. 检查Maven环境
-    if ! check_maven_environment; then
-        log_error "Maven环境检查失败"
+    # 安装依赖
+    if ! install_dependencies; then
+        log_error "依赖安装失败"
         return 1
     fi
     
-    # 4. 克隆代码
+    # 克隆代码
     if ! git_clone; then
         log_error "代码克隆失败"
         return 1
     fi
     
-    # 5. 构建前检查
-    if ! pre_build_check; then
-        log_error "构建前检查失败"
+    # 配置环境
+    if ! setup_environment; then
+        log_error "环境配置失败"
         return 1
     fi
     
-    # 6. 构建应用
+    # 构建应用
     if ! build_application; then
         log_error "应用构建失败"
         return 1
     fi
     
-    # 7. 构建后检查
-    if ! post_build_check; then
-        log_error "构建后检查失败"
-        return 1
-    fi
-    
-    # 创建系统服务
+    # 创建服务
     if ! create_service; then
+        log_error "服务创建失败"
         return 1
     fi
     
     # 启动应用
     if ! start_application; then
+        log_error "应用启动失败"
+        return 1
+    fi
+    
+    # 等待应用启动
+    sleep 5
+    
+    if ! check_installation; then
+        log_error "安装检查失败"
         return 1
     fi
     
     log_info "安装完成"
+    return 0
 }
 
 # 检查Java环境
@@ -685,6 +712,7 @@ post_build_check() {
     fi
     
     # 验证JAR文件
+    log_cmd "jar tvf ${JAR_FILE}"
     if ! jar tvf "${JAR_FILE}" > /dev/null 2>&1; then
         log_error "JAR文件验证失败"
         return 1
@@ -693,7 +721,7 @@ post_build_check() {
     return 0
 }
 
-# 检查命令是否存在
+# ���查命令是否存在
 check_command() {
     if ! command -v $1 &> /dev/null; then
         log_error "$1 未安装"
@@ -726,16 +754,19 @@ start_application() {
         fi
     done
     
+    log_cmd "systemctl is-active --quiet ${APP_NAME}"
     if systemctl is-active --quiet ${APP_NAME}; then
         log_info "应用已在运行"
         return 0
     fi
     
-    sudo systemctl start ${APP_NAME}
+    log_cmd " systemctl start ${APP_NAME}"
+    systemctl start ${APP_NAME}
     
     # 等待服务启动
     local timeout=30
     while [ $timeout -gt 0 ]; do
+        log_cmd "systemctl is-active --quiet ${APP_NAME}"
         if systemctl is-active --quiet ${APP_NAME}; then
             log_info "应用已启动"
             return 0
@@ -759,27 +790,62 @@ stop_application() {
 check_application_status() {
     log_info "检查应用状态..."
     
-    # 检查进程
-    if ! systemctl is-active --quiet ${APP_NAME}; then
-        log_error "服务未运行"
-        return 1
-    fi
+    # 检查目录结构
+    local REQUIRED_DIRS=(
+        "${TOOLS_DIR}"
+        "${TOOLS_DIR}/jdk"
+        "${TOOLS_DIR}/maven"
+        "${MAVEN_REPO}"
+        "${BACKUP_DIR}"
+        "${LOG_DIR}"
+        "${CONF_DIR}"
+        "${DATA_DIR}"
+        "${DATA_DIR}/db"
+        "${DATA_DIR}/ssl"
+        "${DATA_DIR}/ssl/certs"
+        "${DATA_DIR}/ssl/keys"
+        "${DATA_DIR}/acme"
+        "${SOURCE_DIR}"
+        "${INSTALL_DIR}/.m2"
+        "${INSTALL_DIR}/maven"
+    )
     
-    # 检查JAR文件
-    if [ ! -f "${INSTALL_DIR}/${APP_NAME}.jar" ]; then
+    for dir in "${REQUIRED_DIRS[@]}"; do
+        if [ ! -d "$dir" ]; then
+            log_error "目录不存在: $dir"
+            return 1
+        fi
+    done
+    
+    # 检查关键文件
+    local REQUIRED_FILES=(
+        "${INSTALL_DIR}/.m2/settings.xml"
+        "${CONF_DIR}/application.yml"
+        "${VERSION_FILE}"
+    )
+    
+    for file in "${REQUIRED_FILES[@]}"; do
+        if [ ! -f "$file" ]; then
+            log_error "文件不存在: $file"
+            return 1
+        fi
+    done
+    
+    # 检查文件
+    if [ ! -f "${APP_JAR}" ]; then
         log_error "JAR文件不存在"
         return 1
     fi
     
-    # 检查日志文件
-    if [ ! -f "${INSTALL_DIR}/logs/application.log" ]; then
-        log_error "日志文件不存在"
+    # 检查配置文件
+    if [ ! -f "${CONF_DIR}/application.yml" ]; then
+        log_error "配置文件不存在"
         return 1
     fi
     
-    # 检查端口
-    if ! netstat -tlpn | grep -q ":${APP_PORT}.*java"; then
-        log_error "应用端口 ${APP_PORT} 未监听"
+    # 检查服务状态
+    if ! systemctl is-active --quiet ${APP_NAME}; then
+        log_error "服务未运行"
         return 1
     fi
     
@@ -821,7 +887,7 @@ log_error() {
 
 # 显示帮助信息
 show_help() {
-    echo -e "${BLUE}SSL测试项目部署脚本${NC}"
+    echo -e "${BLUE}SSL测试目部署脚本${NC}"
     echo
     echo -e "${YELLOW}用法:${NC}"
     echo "  $0 <命令> [参数]"
@@ -833,7 +899,7 @@ show_help() {
     echo "  stop          停止应用"
     echo "  restart       重启应用"
     echo "  status        查看应用状态"
-    echo "  version       显示版本信息"
+    echo "  version       显示版本息"
     echo "  rollback <版本> 回滚到指定版本"
     echo "  cleanup       清理环境"
     echo
@@ -851,7 +917,7 @@ version_info() {
         
         if [ -d "${INSTALL_DIR}/source/.git" ]; then
             cd "${INSTALL_DIR}/source"
-            echo -e "${BLUE}可用版本:${NC}"
+            echo -e "${BLUE}可版本:${NC}"
             git log --oneline -n 5
         fi
     else
@@ -864,7 +930,7 @@ version_info() {
 rollback() {
     local version="$1"
     if [ -z "$version" ]; then
-        log_error "请指定要回滚的版本"
+        log_error "请指定要回滚的版本号"
         return 1
     fi
     
@@ -888,7 +954,7 @@ rollback() {
 
 # 清理环境
 cleanup_environment() {
-    echo -e "${RED}警告: 此操作将清理所有应用数据!${NC}"
+    echo -e "${RED}警告: 此操作将清空所有应用数据!${NC}"
     echo -e "${YELLOW}将清理以下内容:${NC}"
     echo "1. 应用程文件"
     echo "2. 日志文件"
@@ -984,46 +1050,140 @@ update_application() {
     fi
 }
 
-# 克隆代码前添加检查
-git_clone() {
-    log_info "克隆代码..."
+# 创建Maven配置
+setup_maven_config() {
+    log_info "配置Maven环境..."
     
-    # 检查目标目录
-    if [ -d "${INSTALL_DIR}/source" ]; then
-        log_info "清理已存在的源码目录..."
-        rm -rf "${INSTALL_DIR}/source"
-    fi
+    # 创建Maven配置目录
+    mkdir -p "${INSTALL_DIR}/.m2"
+    mkdir -p "${MAVEN_REPO}"
     
-    git clone -b ${GIT_BRANCH} ${GIT_REPO} "${INSTALL_DIR}/source"
+    # 创建Maven配置文件
+    cat > "${INSTALL_DIR}/.m2/settings.xml" << EOF
+<settings>
+    <localRepository>${MAVEN_REPO}</localRepository>
+    <mirrors>
+        <mirror>
+            <id>aliyun</id>
+            <name>Aliyun Maven Mirror</name>
+            <url>https://maven.aliyun.com/repository/public</url>
+            <mirrorOf>central</mirrorOf>
+        </mirror>
+    </mirrors>
+    <profiles>
+        <profile>
+            <id>default</id>
+            <activation>
+                <activeByDefault>true</activeByDefault>
+            </activation>
+            <properties>
+                <maven.test.skip>true</maven.test.skip>
+            </properties>
+        </profile>
+    </profiles>
+</settings>
+EOF
+    
+    # 设置Maven配置文件权限
+    chmod 644 "${INSTALL_DIR}/.m2/settings.xml"
+    chown ${APP_USER}:${APP_GROUP} "${INSTALL_DIR}/.m2/settings.xml"
+    
+    # 设置Maven仓库权限
+    chmod 755 "${MAVEN_REPO}"
+    chown -R ${APP_USER}:${APP_GROUP} "${MAVEN_REPO}"
 }
 
-# 更新应用时的构建检查
-check_build_result() {
-    local FINAL_JAR="${INSTALL_DIR}/${APP_NAME}.jar"
-    local BUILD_LOG="${INSTALL_DIR}/last-build.log"
-    local MAVEN_LOG="${INSTALL_DIR}/last-maven.log"
+# 检查安装结果
+check_installation() {
+    log_info "检查安装结果..."
     
-    # 检查构建日志中的错误
-    if [ -f "${MAVEN_LOG}" ]; then
-        if grep -i "BUILD FAILURE" "${MAVEN_LOG}" > /dev/null; then
-            log_error "Maven构建失败，详见日志: ${MAVEN_LOG}"
+    # 检查工具安装
+    local TOOL_FILES=(
+        "${JDK_DIR}/bin/java"
+        "${JDK_DIR}/lib"
+        "${MAVEN_DIR}/bin/mvn"
+        "${MAVEN_DIR}/lib"
+    )
+    
+    for file in "${TOOL_FILES[@]}"; do
+        if [ ! -e "$file" ]; then
+            log_error "工具文件不存在: $file"
             return 1
         fi
-    fi
+    done
     
-    # 检查最终JAR文件
-    if [ ! -f "${FINAL_JAR}" ]; then
-        log_error "构建后JAR文件不存在"
+    # 检查源码
+    if [ ! -f "${SOURCE_DIR}/pom.xml" ]; then
+        log_error "源码未正确克隆"
         return 1
     fi
     
-    # 验证JAR文件
-    if ! jar tvf "${FINAL_JAR}" > /dev/null 2>&1; then
-        log_error "JAR文件验证失败"
+    # 检查配置文件
+    if [ ! -f "${CONF_DIR}/application.yml" ]; then
+        log_error "配置文件不存在"
         return 1
     fi
     
+    # 检查Maven配置
+    if [ ! -f "${INSTALL_DIR}/.m2/settings.xml" ]; then
+        log_error "Maven配置不存在"
+        return 1
+    fi
+    
+    # 检查应用文件
+    if [ ! -f "${APP_JAR}" ]; then
+        log_error "应用JAR不存在"
+        return 1
+    fi
+    
+    # 检查版本文件
+    if [ ! -f "${VERSION_FILE}" ]; then
+        log_error "版本文件不存在"
+        return 1
+    fi
+    
+    # 检查目录权限
+    check_directory_permissions
+    
+    log_info "安装检查完成"
     return 0
+}
+
+# 检查目录权限
+check_directory_permissions() {
+    local DIR_PERMISSIONS=(
+        "${INSTALL_DIR}:755"
+        "${TOOLS_DIR}:755"
+        "${SOURCE_DIR}:755"
+        "${CONF_DIR}:755"
+        "${BACKUP_DIR}:700"
+        "${LOG_DIR}:777"
+        "${DATA_DIR}:700"
+        "${DATA_DIR}/db:700"
+        "${DATA_DIR}/ssl:700"
+        "${DATA_DIR}/ssl/certs:700"
+        "${DATA_DIR}/ssl/keys:700"
+        "${DATA_DIR}/acme:700"
+        "${INSTALL_DIR}/maven:755"
+        "${MAVEN_REPO}:755"
+        "${INSTALL_DIR}/.m2:755"
+    )
+    
+    for entry in "${DIR_PERMISSIONS[@]}"; do
+        local dir="${entry%%:*}"
+        local perm="${entry##*:}"
+        
+        if [ ! -d "$dir" ]; then
+            log_error "目录不存在: $dir"
+            return 1
+        fi
+        
+        local actual_perm=$(stat -c %a "$dir")
+        if [ "$actual_perm" != "$perm" ]; then
+            log_error "目录权限不正确: $dir (期望:$perm, 实际:$actual_perm)"
+            return 1
+        fi
+    done
 }
 
 # 主函数
